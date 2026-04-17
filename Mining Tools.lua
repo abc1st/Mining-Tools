@@ -1,6 +1,6 @@
 script_name('Mining Tools')
 script_author('JustFedot -- Modified by kernelich')
-script_version('2.4.5')
+script_version('2.4.6')
 script_version_number(2)
 script_description('Скрипт для упрощения майнинга на сервере.')
 
@@ -17,13 +17,13 @@ local raknet = require('samp.raknet')
 local wm = require('windows.message')
 local new = imgui.new
 
-
 local searchBuffer = new.char[256]()
 local currentStatusFilter = new.int(0)
 local selectedCardLevels = {}
+local selectedCities = {}
 local _snapshotSaveT = 0
 
-local sortItems = { u8 "По номеру", u8 "По балансу", u8 "По городу", u8 "По циклам", u8 "По жидкости", u8 "По видеокартам" }
+local sortItems = { u8 "По номеру", u8 "По балансу", u8 "По циклам", u8 "По жидкости", u8 "По видеокартам", u8 "По городу" }
 local statusItems = { u8 "Все дома", u8 "В норме", u8 "Требует внимания", u8 "Есть проблемы", u8 "Без подвала" }
 require('samp.synchronization')
 
@@ -194,86 +194,9 @@ end
 
 local jcfg = Jcfg()
 
-local cfg = {
-    isReloaded               = false,
-    debug                    = false,
-    silentMode               = false,
-    active                   = true,
-    useSuperCoolant          = false,
-    useCoolantPercent        = 50,
-    economyMode              = false,
-    pause_duration           = 300,
-    count_action             = 8,
-    useDialogMode            = false,
-    targetHouseBalance       = 10000000,
-    housesWithoutBasement    = {},
-    excludedHouses           = {},
-    currentSort              = 0,
-    sortAscending            = true,
-    showExcludedHouses       = false,
-    useSimpleTopUp           = true,
-    fixTopUpEnabled          = true,
-    lastHouseListHash        = "",
-    basementScanned          = {},
-    cardSnapshots            = {},
-    reminderEnabled          = false,
-    autoCollectEnabled       = false,
-    collectTimesPerDay       = 2,
-    pauseOnPayday            = true,
-    lastCollectTime          = 0,
-    collectOnlyIfMin         = 0,
-    autoEnableCards          = false,
-    autoEnableCardsOnCollect = false,
-    autoEnableCardsOnOpen    = false,
-    minBalanceWarning        = 5000000,
-    fixSwitchEnabled         = true,
-    fixCollectEnabled        = true,
-    fixCoolantEnabled        = false,
-    smartCollectEnabled      = false,
-    smartCollectTarget       = 50,
-    btcThreshold             = 100,
-    reminderInterval         = 10,
-    notifyWindowPosX         = 0.75,
-    notifyWindowPosY         = 0.05,
-    notifyBeforeSec          = 120,
-    notifyShowDuration       = 8,
-    logsWindowPosX           = 0.3,
-    logsWindowPosY           = 0.1,
-    checkForUpdates          = false,
-    cheatModeEnabled         = false,
-    autoPayTaxesEnabled      = false,
-    autoPayTaxesWithCollect  = true,
-    autoPayTaxesByTimer      = false,
-    autoPayTaxesInterval     = 24,
-    lastTaxPayTime           = 0,
-    autoTopUpEnabled         = false,
-    autoTopUpWithCollect     = true,
-    autoTopUpByThreshold     = false,
-    autoTopUpThreshold       = 3000000,
-    autoTopUpByTimer         = false,
-    autoTopUpTimerInterval   = 12,
-    lastAutoTopUpTime        = 0,
-    notifyAutoCollectEnabled = true,
-    autoRefreshEnabled       = false,
-    autoRefreshInterval      = 30,
-    lastAutoRefreshTime      = 0,
-    randomDelayEnabled       = false,
-    randomDelayMin           = 1,
-    randomDelayMax           = 120,
-}
-
-
-jcfg.update(cfg)
-local imcfg = jcfg.setupImgui(cfg)
-
-
-function save()
-    jcfg.save(cfg)
-end
-
-function resetDefaultCfg()
-    cfg = {
-        isReloaded               = true,
+local function getDefaultCfg()
+    return {
+        isReloaded               = false,
         debug                    = false,
         silentMode               = false,
         active                   = true,
@@ -338,7 +261,21 @@ function resetDefaultCfg()
         randomDelayEnabled       = false,
         randomDelayMin           = 1,
         randomDelayMax           = 120,
+        groupByCity              = false,
     }
+end
+
+local cfg = getDefaultCfg()
+
+jcfg.update(cfg)
+local imcfg = jcfg.setupImgui(cfg)
+
+function save()
+    jcfg.save(cfg)
+end
+
+function resetDefaultCfg()
+    cfg = getDefaultCfg()
     save()
     thisScript():reload()
 end
@@ -406,7 +343,6 @@ local data = {
     logsTab                = imgui.new.int(0),
     logsResetConfirm       = false,
     logsResetTimer         = 0,
-    cardsOnTime            = 0,
     isWaitingPayday        = false,
     paydaySkippedAt        = 0,
     skipPayday             = false,
@@ -419,86 +355,14 @@ local data = {
     stopBySystem           = false,
     pendingCollectAt       = 0,
     pendingCollectLocked   = false,
+    logsPeriodFilter       = 0,
+    cityFilterOpenTime     = 0,
+    cityFilterItemRect     = nil,
+    cityFilterInvert       = false,
 }
 
 local utils = (function()
     local self = {}
-    local function cyrillic(text)
-        local convtbl = {
-            [230] = 155,
-            [231] = 159,
-            [247] = 164,
-            [234] = 107,
-            [250] = 144,
-            [251] = 168,
-            [254] = 171,
-            [253] = 170,
-            [255] = 172,
-            [224] = 97,
-            [240] = 112,
-            [241] = 99,
-            [226] = 162,
-            [228] = 154,
-            [225] = 151,
-            [227] = 153,
-            [248] = 165,
-            [243] = 121,
-            [184] = 101,
-            [235] = 158,
-            [238] = 111,
-            [245] = 120,
-            [233] = 157,
-            [242] = 166,
-            [239] = 163,
-            [244] = 63,
-            [237] = 174,
-            [229] = 101,
-            [246] = 36,
-            [236] = 175,
-            [232] = 156,
-            [249] = 161,
-            [252] = 169,
-            [215] = 141,
-            [202] = 75,
-            [204] = 77,
-            [220] = 146,
-            [221] = 147,
-            [222] = 148,
-            [192] = 65,
-            [193] = 128,
-            [209] = 67,
-            [194] = 139,
-            [195] = 130,
-            [197] = 69,
-            [206] = 79,
-            [213] = 88,
-            [168] = 69,
-            [223] = 149,
-            [207] = 140,
-            [203] = 135,
-            [201] = 133,
-            [199] = 136,
-            [196] = 131,
-            [208] = 80,
-            [200] = 133,
-            [198] = 132,
-            [210] = 143,
-            [211] = 89,
-            [216] = 142,
-            [212] = 129,
-            [214] = 137,
-            [205] = 72,
-            [217] = 138,
-            [218] = 167,
-            [219] = 145
-        }
-        local result = {}
-        for i = 1, #text do
-            local c = text:byte(i)
-            result[i] = string.char(convtbl[c] or c)
-        end
-        return table.concat(result)
-    end
     function self.addChat(a)
         if cfg.silentMode or not a then return end
 
@@ -517,23 +381,9 @@ local utils = (function()
         sampAddChatMessage('{ffa500}' .. thisScript().name .. ' DEBUG' .. '{ffffff}: ' .. a, -1)
     end
 
-    function self.printStringNow(text, time)
-        if not text then return end
-        time = time or 100
-        text = type(text) == "number" and tostring(text) or text
-        if type(text) ~= 'string' then return end
-        printStringNow(cyrillic(text), time)
-    end
-
     function self.calculateRemainingHours(percent)
         local consumptionPerHour = 0.48
         return percent / consumptionPerHour
-    end
-
-    function self.random(min, max)
-        math.randomseed(os.time())
-        for _ = 1, 5 do math.random() end
-        return math.random(min, max)
     end
 
     function self.formatNumber(num)
@@ -760,10 +610,92 @@ local function rebuildLogsCache()
         end
     end
 end
+local logsStatsCache = { dirty = true, buildDate = "", byPeriod = {} }
+
+local function isDateInPeriod(dateStr, period)
+    if period == 0 then return true end
+    local d, m, y = dateStr:match("(%d+)%.(%d+)%.(%d+)")
+    if not d then return false end
+    if period == 1 then return dateStr == os.date('%d.%m.%Y') end
+    local entryTime = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d) })
+    local diff = os.time() - entryTime
+    if period == 2 then return diff < 7 * 86400 end
+    if period == 3 then return diff < 30 * 86400 end
+    return true
+end
+
+local function rebuildLogsStats()
+    local result = {}
+    for p = 0, 3 do
+        result[p] = {
+            btc = 0,
+            asc = 0,
+            collectSessions = 0,
+            switchOn = 0,
+            switchOff = 0,
+            coolantCards = 0,
+            coolantBottles = 0,
+            coolantSuper = 0,
+            topup = 0,
+        }
+    end
+    for dateStr, dayEntries in pairs(logs) do
+        local inP = {}
+        for p = 0, 3 do inP[p] = isDateInPeriod(dateStr, p) end
+        for _, e in ipairs(dayEntries) do
+            local act = e.action or 'collect'
+            for p = 0, 3 do
+                if inP[p] then
+                    local s = result[p]
+                    if act == 'collect' then
+                        s.btc = s.btc + (e.btc or 0)
+                        s.asc = s.asc + (e.asc or 0)
+                        s.collectSessions = s.collectSessions + 1
+                    elseif act == 'switch' then
+                        if e.enabled then
+                            s.switchOn = s.switchOn + (e.count or 0)
+                        else
+                            s.switchOff = s.switchOff + (e.count or 0)
+                        end
+                    elseif act == 'coolant' then
+                        s.coolantCards = s.coolantCards + (e.count or 0)
+                        if e.super then
+                            s.coolantSuper = s.coolantSuper + (e.bottles or 0)
+                        else
+                            s.coolantBottles = s.coolantBottles + (e.bottles or 0)
+                        end
+                    elseif act == 'fix' then
+                        s.btc = s.btc + (e.btc or 0)
+                        s.asc = s.asc + (e.asc or 0)
+                        s.switchOn = s.switchOn + (e.cards or 0)
+                        s.topup = s.topup + (e.topup or 0)
+                    elseif act == 'topup' then
+                        s.topup = s.topup + (e.topup or 0)
+                    end
+                end
+            end
+        end
+    end
+    logsStatsCache.byPeriod = result
+    logsStatsCache.dirty = false
+    logsStatsCache.buildDate = os.date('%d.%m.%Y')
+end
+
+local function getLogsStats(period)
+    local today = os.date('%d.%m.%Y')
+    if logsStatsCache.dirty or logsStatsCache.buildDate ~= today then
+        rebuildLogsStats()
+    end
+    return logsStatsCache.byPeriod[period] or logsStatsCache.byPeriod[0]
+end
+
+local function invalidateLogsStats() logsStatsCache.dirty = true end
+
 local function loadLogs()
     local result = jcfg.load(_logsPath)
     if type(result) == 'table' then logs = result end
     rebuildLogsCache()
+    invalidateLogsStats()
 end
 
 local function saveLogs()
@@ -782,6 +714,7 @@ local function addLogEntry(action, details)
         logsCache.collectBtc = logsCache.collectBtc + (details.btc or 0)
         logsCache.collectAsc = logsCache.collectAsc + (details.asc or 0)
     end
+    invalidateLogsStats()
     saveLogs()
 end
 
@@ -794,6 +727,7 @@ local function addCoolantLogEntry(count, bottles, isSuper)
             if last.action == 'coolant' then
                 last.count   = (last.count or 0) + count
                 last.bottles = (last.bottles or 0) + bottles
+                invalidateLogsStats()
                 saveLogs()
                 return
             end
@@ -803,82 +737,84 @@ local function addCoolantLogEntry(count, bottles, isSuper)
     addLogEntry('coolant', { count = count, bottles = bottles, super = isSuper })
 end
 
-local function formatLogEntry(entry)
-    local action = entry.action or 'collect'
-    local icon, label, detail = "", "", ""
-
-    if action == 'collect' then
-        icon        = fa.COINS
-        label       = "Сбор крипты"
-        local parts = {}
-        if (entry.btc or 0) > 0 then table.insert(parts, string.format("%d BTC", entry.btc)) end
-        if (entry.asc or 0) > 0 then table.insert(parts, string.format("%d ASC", entry.asc)) end
-        if (entry.houses or 0) > 1 then table.insert(parts, string.format("%d дом.", entry.houses)) end
-        detail = table.concat(parts, "  ·  ")
-    elseif action == 'switch' then
-        icon        = entry.enabled and fa.POWER_OFF or fa.PLUG
-        label       = entry.enabled and "Включение карт" or "Выключение карт"
-        local parts = {}
-        if (entry.count or 0) > 0 then table.insert(parts, string.format("%d карт", entry.count)) end
-        if (entry.houses or 0) > 0 then table.insert(parts, string.format("%d дом.", entry.houses)) end
-        detail = table.concat(parts, "  ·  ")
-    elseif action == 'coolant' then
-        icon        = fa.DROPLET
-        label       = "Заливка жидкости"
-        local parts = {}
-        if (entry.count or 0) > 0 then
-            table.insert(parts, string.format("%d карт", entry.count))
-        end
-        if (entry.bottles or 0) > 0 then
-            if entry.super then
-                table.insert(parts, string.format("%d супер", entry.bottles))
-            else
-                table.insert(parts, string.format("%d шт.", entry.bottles))
+local logActions = {
+    collect = {
+        icon   = fa.COINS,
+        label  = "Сбор крипты",
+        format = function(e)
+            local parts = {}
+            if (e.btc or 0) > 0 then table.insert(parts, string.format("%d BTC", e.btc)) end
+            if (e.asc or 0) > 0 then table.insert(parts, string.format("%d ASC", e.asc)) end
+            if (e.houses or 0) > 1 then table.insert(parts, string.format("%d дом.", e.houses)) end
+            return table.concat(parts, "  ·  ")
+        end,
+    },
+    switch = {
+        iconFn  = function(e) return e.enabled and fa.POWER_OFF or fa.PLUG end,
+        labelFn = function(e) return e.enabled and "Включение карт" or "Выключение карт" end,
+        format  = function(e)
+            local parts = {}
+            if (e.count or 0) > 0 then table.insert(parts, string.format("%d карт", e.count)) end
+            if (e.houses or 0) > 0 then table.insert(parts, string.format("%d дом.", e.houses)) end
+            return table.concat(parts, "  ·  ")
+        end,
+    },
+    coolant = {
+        icon   = fa.DROPLET,
+        label  = "Заливка жидкости",
+        format = function(e)
+            local parts = {}
+            if (e.count or 0) > 0 then
+                table.insert(parts, string.format("%d карт", e.count))
             end
-        end
-        detail = table.concat(parts, "  ·  ")
-    elseif action == 'fix' then
-        icon        = fa.WAND_MAGIC_SPARKLES
-        label       = "Авто-обслуживание"
-        local parts = {}
-        if (entry.btc or 0) > 0 then
-            table.insert(parts, string.format("%d BTC", entry.btc))
-        end
-        if (entry.asc or 0) > 0 then
-            table.insert(parts, string.format("%d ASC", entry.asc))
-        end
-        if (entry.cards or 0) > 0 then
-            table.insert(parts, string.format("%d вкл.", entry.cards))
-        end
-        if (entry.topup or 0) > 0 then
-            table.insert(parts, string.format("$%s", utils.formatNumber(entry.topup)))
-        end
-        detail = table.concat(parts, "  ·  ")
-    elseif action == 'topup' then
-        icon        = fa.DOLLAR_SIGN
-        label       = "Пополнение баланса"
-        local parts = {}
-        if (entry.topup or 0) > 0 then
-            table.insert(parts, string.format("$%s", utils.formatNumber(entry.topup)))
-        end
-        if (entry.houses or 0) > 0 then
-            table.insert(parts, string.format("%d дом.", entry.houses))
-        end
-        detail = table.concat(parts, "  ·  ")
-    elseif action == 'worktime' then
-        icon    = fa.CLOCK
-        label   = "Время работы"
-        local s = entry.seconds or 0
-        local h = math.floor(s / 3600)
-        local m = math.floor((s % 3600) / 60)
-        detail  = h > 0 and string.format("%dч %dм", h, m) or string.format("%dм", m)
-    elseif action == 'tax' then
-        icon   = fa.FILE_INVOICE_DOLLAR
-        label  = "Оплата налогов"
-        detail = (entry.amount or 0) > 0
-            and string.format("$%s", utils.formatNumber(entry.amount))
-            or ""
-    end
+            if (e.bottles or 0) > 0 then
+                table.insert(parts, e.super
+                    and string.format("%d супер", e.bottles)
+                    or string.format("%d шт.", e.bottles))
+            end
+            return table.concat(parts, "  ·  ")
+        end,
+    },
+    fix = {
+        icon   = fa.WAND_MAGIC_SPARKLES,
+        label  = "Авто-обслуживание",
+        format = function(e)
+            local parts = {}
+            if (e.btc or 0) > 0 then table.insert(parts, string.format("%d BTC", e.btc)) end
+            if (e.asc or 0) > 0 then table.insert(parts, string.format("%d ASC", e.asc)) end
+            if (e.cards or 0) > 0 then table.insert(parts, string.format("%d вкл.", e.cards)) end
+            if (e.topup or 0) > 0 then table.insert(parts, string.format("$%s", utils.formatNumber(e.topup))) end
+            return table.concat(parts, "  ·  ")
+        end,
+    },
+    topup = {
+        icon   = fa.DOLLAR_SIGN,
+        label  = "Пополнение баланса",
+        format = function(e)
+            local parts = {}
+            if (e.topup or 0) > 0 then table.insert(parts, string.format("$%s", utils.formatNumber(e.topup))) end
+            if (e.houses or 0) > 0 then table.insert(parts, string.format("%d дом.", e.houses)) end
+            return table.concat(parts, "  ·  ")
+        end,
+    },
+    tax = {
+        icon   = fa.FILE_INVOICE_DOLLAR,
+        label  = "Оплата налогов",
+        format = function(e)
+            return (e.amount or 0) > 0
+                and string.format("$%s", utils.formatNumber(e.amount))
+                or ""
+        end,
+    },
+}
+
+local function formatLogEntry(entry)
+    local spec = logActions[entry.action or 'collect']
+    if not spec then return "", "", "" end
+
+    local icon   = spec.iconFn and spec.iconFn(entry) or spec.icon or ""
+    local label  = spec.labelFn and spec.labelFn(entry) or spec.label or ""
+    local detail = spec.format and spec.format(entry) or ""
 
     return icon, label, detail
 end
@@ -1066,32 +1002,17 @@ local houseStatusHelper = {
     end
 }
 
-function formatEarnings(btc, asc, includeAsc, separator, returnStatus)
+function formatEarnings(btc, asc, includeAsc, separator)
     separator = separator or " {FFFFFF}| "
     local parts = {}
-
     if btc and btc > 0 then
         table.insert(parts, string.format("{BEF781}%d BTC", btc))
     end
-
     if asc and asc > 0 and includeAsc then
         table.insert(parts, string.format("{FFA500}%d ASC", asc))
     end
-
-    if #parts == 0 then
-        if returnStatus then
-            return "{808080}0", false
-        else
-            return "{808080}0"
-        end
-    end
-
-    local result = table.concat(parts, separator)
-    if returnStatus then
-        return result, true
-    else
-        return result
-    end
+    if #parts == 0 then return "{808080}0", false end
+    return table.concat(parts, separator), true
 end
 
 function isArizonaServer()
@@ -1140,6 +1061,247 @@ end
 
 function getTimeUntilCollect()
     return getNextCollectTime() - os.time()
+end
+
+local function getSmartAggregate()
+    local hasData, totalBtc, totalDaily = false, 0, 0
+    local now = os.time()
+    for houseId, snapshot in pairs(cfg.cardSnapshots) do
+        local houseNum = tonumber(houseId)
+        if houseNum and not shouldSkipHouse(houseNum) then
+            local st = data.houseStatuses[houseNum]
+            if st and st.lastCheck > 0 and snapshot.dailyBtcRate and snapshot.dailyBtcRate > 0 then
+                hasData    = true
+                local dBtc = snapshot.dailyBtcRate
+                totalBtc   = totalBtc + (st.earnings and st.earnings.btc or 0)
+                    + dBtc * ((now - st.lastCheck) / 86400)
+                totalDaily = totalDaily + dBtc
+            end
+        end
+    end
+    return hasData, totalBtc, totalDaily
+end
+
+local collectTriggers = {
+    {
+        name = 'reminder',
+        kind = 'notify_only',
+        enabled = function()
+            return cfg.reminderEnabled
+                and not cfg.autoCollectEnabled
+                and not cfg.smartCollectEnabled
+        end,
+        tick = function(state, now)
+            local estBTC, hasData = estimateTotalBTC()
+            if hasData and estBTC >= cfg.btcThreshold
+                and now - (state.lastShownAt or 0) > cfg.reminderInterval * 60 then
+                state.lastShownAt            = now
+                data.notifyWindow.btcAmount  = estBTC
+                data.notifyWindow.mode       = 'reminder'
+                data.notifyWindow.autoHideAt = now + cfg.notifyShowDuration
+                data.notifyWindow.show[0]    = true
+            end
+        end,
+    },
+    {
+        name            = 'scheduled',
+        kind            = 'collect',
+        enabled         = function()
+            return cfg.autoCollectEnabled and cfg.cheatModeEnabled
+        end,
+        getSecondsLeft  = function() return getTimeUntilCollect() end,
+        getCountdownAt  = function() return getNextCollectTime() end,
+        fireThrottleSec = function() return getCollectInterval() - 60 end,
+    },
+    {
+        name                = 'smart',
+        kind                = 'collect',
+        enabled             = function()
+            return cfg.smartCollectEnabled
+                and not cfg.autoCollectEnabled
+                and not cfg.reminderEnabled
+                and cfg.cheatModeEnabled
+        end,
+        getSecondsLeft      = function()
+            local ok, btc, daily = getSmartAggregate()
+            if not ok or daily <= 0 then return nil end
+            local hoursLeft = (cfg.smartCollectTarget - btc) / (daily / 24)
+            return math.floor(hoursLeft * 3600), btc
+        end,
+        getCountdownAt      = function(secsLeft) return os.time() + secsLeft end,
+        fireThrottleSec     = function() return 300 end,
+        shouldCancelPending = function(btc)
+            return btc and btc < cfg.smartCollectTarget * 0.5
+        end,
+    },
+}
+
+local triggerState = { reminder = {}, scheduled = {}, smart = {} }
+
+function runSilentCollect(doUpdateStatuses)
+    data.silentWindowOpen      = true
+    data.showLogsWindow[0]     = false
+    data.showSettingsWindow[0] = false
+    data.dialogData.flashminer = {}
+    sampSendChat("/flashminer")
+    wait(200)
+    local t = 0
+    while #data.dialogData.flashminer == 0 and t < 5000 do
+        wait(200); t = t + 200
+    end
+    if #data.dialogData.flashminer == 0 then
+        data.silentWindowOpen     = false
+        data.notifyWindow.show[0] = false
+        return false
+    end
+    if doUpdateStatuses then
+        local needsUpdate = true
+        local now2 = os.time()
+        for _, house in ipairs(data.dialogData.flashminer) do
+            local status = data.houseStatuses[house.house_number]
+            if status and status.lastCheck > 0 and (now2 - status.lastCheck) < 300 then
+                needsUpdate = false; break
+            end
+        end
+        if needsUpdate then
+            local updateTask = buildTaskTable('updateStatuses')
+            updateTask:run()
+            wait(300)
+            while data.working do wait(200) end
+        end
+    end
+    wait(300)
+    while data.working do wait(200) end
+    local task = buildTaskTable('collectFromAllHouses')
+    task:run()
+    wait(500)
+    while data.working do wait(200) end
+    if cfg.autoEnableCardsOnCollect then
+        wait(300)
+        data.dialogData.flashminer = {}
+        sampSendChat("/flashminer")
+        wait(200)
+        local t2 = 0
+        while #data.dialogData.flashminer == 0 and t2 < 5000 do
+            wait(200); t2 = t2 + 200
+        end
+        if #data.dialogData.flashminer > 0 then
+            local switchTask = buildTaskTable('massSwitchCards')
+            switchTask:run(true)
+            wait(500)
+            while data.working do wait(200) end
+        end
+    end
+    if cfg.cheatModeEnabled and cfg.autoPayTaxesEnabled and cfg.autoPayTaxesWithCollect then
+        wait(300)
+        while data.working do wait(200) end
+        local taxTask = buildTaskTable('autoPayTaxes')
+        taxTask:run()
+        wait(500)
+        while data.working do wait(200) end
+    end
+
+    if cfg.cheatModeEnabled and cfg.autoTopUpEnabled and cfg.autoTopUpWithCollect then
+        wait(300)
+        while data.working do wait(200) end
+        data.dialogData.flashminer = {}
+        sampSendChat("/flashminer")
+        wait(200)
+        local tTopUp = 0
+        while #data.dialogData.flashminer == 0 and tTopUp < 5000 do
+            wait(200); tTopUp = tTopUp + 200
+        end
+        if #data.dialogData.flashminer > 0 then
+            local topUpTask = buildTaskTable('autoTopUp')
+            topUpTask:run()
+            wait(500)
+            while data.working do wait(200) end
+        end
+    end
+    fixI()
+    data.currentCollectHouse       = ""
+    data.silentWindowOpen          = false
+    data.showHouseControlWindow[0] = false
+    data.notifyWindow.show[0]      = false
+    return true
+end
+
+local function CollectNow(st, now)
+    cfg.lastCollectTime  = now
+    st.countdownNotified = false
+    st.pendingNotified   = false
+    save()
+    if cfg.notifyAutoCollectEnabled then
+        data.notifyWindow.mode       = 'collecting'
+        data.notifyWindow.autoHideAt = 0
+        data.notifyWindow.show[0]    = true
+    end
+    runSilentCollect(true)
+end
+
+local function tickTrigger(trig, now)
+    if not trig.enabled() then return end
+    local st = triggerState[trig.name]
+
+    if trig.kind == 'notify_only' then
+        if not data.working then trig.tick(st, now) end
+        return
+    end
+
+    local secsLeft, extra = trig.getSecondsLeft()
+    if not secsLeft then return end
+
+    if secsLeft > cfg.notifyBeforeSec then st.countdownNotified = false end
+
+    if cfg.notifyAutoCollectEnabled and not cfg.randomDelayEnabled then
+        if secsLeft > 0 and secsLeft <= cfg.notifyBeforeSec
+            and not st.countdownNotified and not data.pendingCollectLocked then
+            st.countdownNotified              = true
+            data.notifyWindow.countdownTarget = trig.getCountdownAt(secsLeft)
+            data.notifyWindow.mode            = 'countdown'
+            data.notifyWindow.autoHideAt      = 0
+            data.notifyWindow.show[0]         = true
+        end
+        if secsLeft <= 0 and data.notifyWindow.mode == 'countdown'
+            and not data.pendingCollectLocked then
+            data.notifyWindow.mode = 'collecting'
+        end
+    end
+
+    if secsLeft <= 0 and not data.pendingCollectLocked
+        and now - cfg.lastCollectTime > trig.fireThrottleSec() then
+        if cfg.randomDelayEnabled then
+            local delay               = math.random(cfg.randomDelayMin * 60, cfg.randomDelayMax * 60)
+            data.pendingCollectAt     = now + delay
+            data.pendingCollectLocked = true
+            st.pendingNotified        = false
+            utils.debugChat(string.format("[%s] Рандомная задержка: %d сек.",
+                trig.name:upper(), delay))
+        elseif not data.working then
+            CollectNow(st, now)
+        end
+    end
+
+    if data.pendingCollectLocked then
+        if trig.shouldCancelPending and trig.shouldCancelPending(extra) then
+            data.pendingCollectLocked = false
+            st.pendingNotified        = false
+            utils.debugChat(string.format("[%s] Условие сброшено, отмена задержки.",
+                trig.name:upper()))
+        elseif now >= data.pendingCollectAt and not data.working then
+            data.pendingCollectLocked = false
+            CollectNow(st, now)
+        elseif cfg.notifyAutoCollectEnabled then
+            local pendLeft = data.pendingCollectAt - now
+            if pendLeft > 0 and pendLeft <= cfg.notifyBeforeSec and not st.pendingNotified then
+                st.pendingNotified                = true
+                data.notifyWindow.countdownTarget = data.pendingCollectAt
+                data.notifyWindow.mode            = 'countdown'
+                data.notifyWindow.autoHideAt      = 0
+                data.notifyWindow.show[0]         = true
+            end
+        end
+    end
 end
 
 function formatTimeLeft(seconds)
@@ -1228,46 +1390,58 @@ function main()
             waitingForDialogClose = true
         end
     end
+
+    local escHandlers = {
+        {
+            cond = function() return updateState.showPopup[0] end,
+            act = function()
+                updateState.showPopup[0] = false
+                updateState.declined = true
+            end
+        },
+        {
+            cond = function() return data.showSettingsWindow[0] and data.showLogsWindow[0] end,
+            act = function()
+                data.showSettingsWindow[0] = false; data.showLogsWindow[0] = false
+            end
+        },
+        {
+            cond = function() return data.showSettingsWindow[0] end,
+            act = function() data.showSettingsWindow[0] = false end
+        },
+        {
+            cond = function() return data.showLogsWindow[0] end,
+            act = function() data.showLogsWindow[0] = false end
+        },
+
+        {
+            cond = function()
+                return data.showHouseControlWindow[0]
+                    and not data.working
+                    and data.lastWindowState.houseControl
+            end,
+            act = function()
+                sampCloseCurrentDialogWithButton(0)
+                data.showHouseControlWindow[0] = false
+                fixI()
+            end
+        },
+
+    }
     addEventHandler('onWindowMessage', function(msg, wparam, lparam)
         if sampIsChatInputActive() then return end
         if msg ~= wm.WM_KEYDOWN then return end
 
-        if wparam == 27 and updateState.showPopup[0] then
-            consumeWindowMessage(true, false)
-            updateState.showPopup[0] = false
-            updateState.declined = true
-            return
-        end
-        if wparam == 27 and data.showSettingsWindow[0] and data.showLogsWindow[0] and data.main[0] then
-            consumeWindowMessage(true, false)
-            data.showSettingsWindow[0] = false
-            data.showLogsWindow[0] = false
-            return
-        end
-
-        if wparam == 27 and data.showSettingsWindow[0] then
-            consumeWindowMessage(true, false)
-            data.showSettingsWindow[0] = false
-            return
-        end
-
-        if wparam == 27 and data.showLogsWindow[0] and (data.showHouseControlWindow[0] or data.main[0]) then
-            consumeWindowMessage(true, false)
-            data.showLogsWindow[0] = false
-            return
-        end
-
-        if data.showHouseControlWindow[0] and wparam == 27 and not data.working then -- ESC
-            if not data.lastWindowState.houseControl then
-                consumeWindowMessage(true, false)
-                return
+        if wparam == 27 then
+            for _, h in ipairs(escHandlers) do
+                if h.cond() then
+                    consumeWindowMessage(true, false)
+                    h.act()
+                    return
+                end
             end
-            consumeWindowMessage(true, false)
-            sampCloseCurrentDialogWithButton(0)
-            data.showHouseControlWindow[0] = false
-            fixI()
-            return
         end
+
         if data.main[0] and data.isFlashminer and not data.working then
             local direction = nil
 
@@ -1381,94 +1555,6 @@ function main()
         end
     end)
 
-    local function runSilentCollect(doUpdateStatuses)
-        data.silentWindowOpen      = true
-        data.showLogsWindow[0]     = false
-        data.showSettingsWindow[0] = false
-        data.dialogData.flashminer = {}
-        sampSendChat("/flashminer")
-        wait(200)
-        local t = 0
-        while #data.dialogData.flashminer == 0 and t < 5000 do
-            wait(200); t = t + 200
-        end
-        if #data.dialogData.flashminer == 0 then
-            data.silentWindowOpen     = false
-            data.notifyWindow.show[0] = false
-            return false
-        end
-        if doUpdateStatuses then
-            local needsUpdate = true
-            local now2 = os.time()
-            for _, house in ipairs(data.dialogData.flashminer) do
-                local status = data.houseStatuses[house.house_number]
-                if status and status.lastCheck > 0 and (now2 - status.lastCheck) < 300 then
-                    needsUpdate = false; break
-                end
-            end
-            if needsUpdate then
-                local updateTask = buildTaskTable('updateStatuses')
-                updateTask:run()
-                wait(300)
-                while data.working do wait(200) end
-            end
-        end
-        wait(300)
-        while data.working do wait(200) end
-        local task = buildTaskTable('collectFromAllHouses')
-        task:run()
-        wait(500)
-        while data.working do wait(200) end
-        if cfg.autoEnableCardsOnCollect then
-            wait(300)
-            data.dialogData.flashminer = {}
-            sampSendChat("/flashminer")
-            wait(200)
-            local t2 = 0
-            while #data.dialogData.flashminer == 0 and t2 < 5000 do
-                wait(200); t2 = t2 + 200
-            end
-            if #data.dialogData.flashminer > 0 then
-                local switchTask = buildTaskTable('massSwitchCards')
-                switchTask:run(true)
-                wait(500)
-                while data.working do wait(200) end
-            end
-        end
-        if cfg.cheatModeEnabled and cfg.autoPayTaxesEnabled and cfg.autoPayTaxesWithCollect then
-            wait(300)
-            while data.working do wait(200) end
-            local taxTask = buildTaskTable('autoPayTaxes')
-            taxTask:run()
-            wait(500)
-            while data.working do wait(200) end
-        end
-
-        if cfg.cheatModeEnabled and cfg.autoTopUpEnabled and cfg.autoTopUpWithCollect then
-            wait(300)
-            while data.working do wait(200) end
-            data.dialogData.flashminer = {}
-            sampSendChat("/flashminer")
-            wait(200)
-            local tTopUp = 0
-            while #data.dialogData.flashminer == 0 and tTopUp < 5000 do
-                wait(200); tTopUp = tTopUp + 200
-            end
-            if #data.dialogData.flashminer > 0 then
-                local topUpTask = buildTaskTable('autoTopUp')
-                topUpTask:run()
-                wait(500)
-                while data.working do wait(200) end
-            end
-        end
-        fixI()
-        data.currentCollectHouse       = ""
-        data.silentWindowOpen          = false
-        data.showHouseControlWindow[0] = false
-        data.notifyWindow.show[0]      = false
-        return true
-    end
-
     lua_thread.create(function()
         while true do
             wait(300)
@@ -1477,23 +1563,38 @@ function main()
                 wait(200)
                 if not data.working then
                     local needsCoolant = false
-                    local needsEnable = false
                     for _, card in ipairs(data.dialogData.videocards) do
                         if card.coolant < cfg.useCoolantPercent then
                             needsCoolant = true
+                            break
                         end
-                        if not card.working and card.coolant > 0 then
+                    end
+
+                    local willRefill = cfg.fixCoolantEnabled and needsCoolant
+
+                    local needsEnable = false
+                    for _, card in ipairs(data.dialogData.videocards) do
+                        if not card.working and (card.coolant > 0 or willRefill) then
                             needsEnable = true
+                            break
                         end
                     end
 
                     local didFillCoolant = false
-                    if needsCoolant then
+                    if willRefill then
                         data.coolantDoneForDialog = true
                         local coolantTask = buildTaskTable('coolant')
                         coolantTask:coolant()
                         while data.working do wait(200) end
-                        didFillCoolant = true
+
+                        if not data.stopAction then
+                            didFillCoolant = true
+                            for _, card in ipairs(data.dialogData.videocards) do
+                                if card.coolant < cfg.useCoolantPercent then
+                                    card.coolant = 100
+                                end
+                            end
+                        end
                         wait(300)
                     end
 
@@ -1515,259 +1616,44 @@ function main()
     end)
 
     lua_thread.create(function()
-        local autoCollectTriggeredAt   = 0
-        local btcNotifShownAt          = 0
-        local countdownNotified        = false
-        local smartCountdownNotified   = false
-        local scheduledPendingNotified = false
-        local smartPendingNotified     = false
-
         while true do
             wait(1000)
             if not cfg.active then goto continue_timer end
 
             local now = os.time()
+            for _, trig in ipairs(collectTriggers) do tickTrigger(trig, now) end
 
-            if cfg.reminderEnabled and not cfg.autoCollectEnabled and not cfg.smartCollectEnabled then
-                local estimatedBTC, hasData = estimateTotalBTC()
-                if hasData and estimatedBTC >= cfg.btcThreshold then
-                    if now - btcNotifShownAt > cfg.reminderInterval * 60 then
-                        btcNotifShownAt              = now
-                        data.notifyWindow.btcAmount  = estimatedBTC
-                        data.notifyWindow.mode       = 'reminder'
-                        data.notifyWindow.autoHideAt = now + cfg.notifyShowDuration
-                        data.notifyWindow.show[0]    = true
-                    end
-                end
+            if not cfg.cheatModeEnabled or data.working then goto continue_timer end
+
+            if cfg.autoPayTaxesEnabled and cfg.autoPayTaxesByTimer
+                and (cfg.lastTaxPayTime + cfg.autoPayTaxesInterval * 3600) <= now then
+                runSilentTask('autoPayTaxes')
             end
 
-            if cfg.autoCollectEnabled and cfg.cheatModeEnabled then
-                local secondsLeft = getTimeUntilCollect()
-
-                if secondsLeft > cfg.notifyBeforeSec then
-                    countdownNotified = false
-                end
-
-                if cfg.notifyAutoCollectEnabled and not cfg.randomDelayEnabled then
-                    if secondsLeft > 0 and secondsLeft <= cfg.notifyBeforeSec and not countdownNotified then
-                        countdownNotified                 = true
-                        data.notifyWindow.countdownTarget = getNextCollectTime()
-                        data.notifyWindow.mode            = 'countdown'
-                        data.notifyWindow.autoHideAt      = 0
-                        data.notifyWindow.show[0]         = true
-                    end
-
-                    if secondsLeft <= 0 and data.notifyWindow.mode == 'countdown' and not data.pendingCollectLocked then
-                        data.notifyWindow.mode = 'collecting'
-                    end
-                end
-
-                if secondsLeft <= 0 and not data.pendingCollectLocked and now - autoCollectTriggeredAt > getCollectInterval() - 60 then
-                    if cfg.randomDelayEnabled then
-                        local delay = math.random(cfg.randomDelayMin * 60, cfg.randomDelayMax * 60)
-                        data.pendingCollectAt = now + delay
-                        data.pendingCollectLocked = true
-                        scheduledPendingNotified = false
-                        utils.debugChat(string.format("[AUTOCOLLECT] Рандомная задержка: %d сек.", delay))
-                    else
-                        if not data.working then
-                            autoCollectTriggeredAt = now
-                            cfg.lastCollectTime    = now
-                            countdownNotified      = false
-                            save()
-
-                            if cfg.notifyAutoCollectEnabled then
-                                data.notifyWindow.mode       = 'collecting'
-                                data.notifyWindow.autoHideAt = 0
-                                data.notifyWindow.show[0]    = true
-                            end
-
-                            runSilentCollect(true)
-                        end
-                    end
-                end
-
-                if data.pendingCollectLocked and now >= data.pendingCollectAt then
-                    if not data.working then
-                        data.pendingCollectLocked = false
-                        autoCollectTriggeredAt    = now
-                        cfg.lastCollectTime       = now
-                        countdownNotified         = false
-                        scheduledPendingNotified  = false
-                        save()
-
-                        if cfg.notifyAutoCollectEnabled then
-                            data.notifyWindow.mode       = 'collecting'
-                            data.notifyWindow.autoHideAt = 0
-                            data.notifyWindow.show[0]    = true
-                        end
-
-                        runSilentCollect(true)
-                    end
-                end
-
-                if data.pendingCollectLocked and cfg.notifyAutoCollectEnabled then
-                    local pendLeft = data.pendingCollectAt - now
-                    if pendLeft > 0 and pendLeft <= cfg.notifyBeforeSec and not scheduledPendingNotified then
-                        scheduledPendingNotified          = true
-                        data.notifyWindow.countdownTarget = data.pendingCollectAt
-                        data.notifyWindow.mode            = 'countdown'
-                        data.notifyWindow.autoHideAt      = 0
-                        data.notifyWindow.show[0]         = true
-                    end
-                end
+            if cfg.autoTopUpEnabled and cfg.autoTopUpByTimer
+                and (cfg.lastAutoTopUpTime + cfg.autoTopUpTimerInterval * 3600) <= now then
+                runSilentTask('autoTopUp')
             end
 
-            if cfg.smartCollectEnabled and not cfg.autoCollectEnabled and not cfg.reminderEnabled and cfg.cheatModeEnabled then
-                if not data.working then
-                    local sTotalBtc, sTotalDaily, sHasData = 0, 0, false
-                    for houseId, snapshot in pairs(cfg.cardSnapshots) do
-                        local houseNum = tonumber(houseId)
-                        if houseNum and not shouldSkipHouse(houseNum) then
-                            local st = data.houseStatuses[houseNum]
-                            if st and st.lastCheck > 0 and snapshot.dailyBtcRate and snapshot.dailyBtcRate > 0 then
-                                sHasData        = true
-                                local dBtc      = snapshot.dailyBtcRate
-                                local estimated = (st.earnings and st.earnings.btc or 0) +
-                                    dBtc * ((now - st.lastCheck) / 86400)
-                                sTotalBtc       = sTotalBtc + estimated
-                                sTotalDaily     = sTotalDaily + dBtc
-                            end
-                        end
-                    end
-
-                    if sHasData and sTotalDaily > 0 then
-                        local sHoursLeft = (cfg.smartCollectTarget - sTotalBtc) / (sTotalDaily / 24)
-                        local sSecsLeft  = math.floor(sHoursLeft * 3600)
-
-                        if sSecsLeft > cfg.notifyBeforeSec then
-                            smartCountdownNotified = false
-                        end
-
-                        if cfg.notifyAutoCollectEnabled and not cfg.randomDelayEnabled then
-                            if sSecsLeft > 0 and sSecsLeft <= cfg.notifyBeforeSec and not smartCountdownNotified and not data.pendingCollectLocked then
-                                smartCountdownNotified            = true
-                                data.notifyWindow.countdownTarget = now + sSecsLeft
-                                data.notifyWindow.mode            = 'countdown'
-                                data.notifyWindow.autoHideAt      = 0
-                                data.notifyWindow.show[0]         = true
-                            end
-
-                            if sSecsLeft <= 0 and data.notifyWindow.mode == 'countdown' and not data.pendingCollectLocked then
-                                data.notifyWindow.mode = 'collecting'
-                            end
-                        end
-                    end
-
-                    if sHasData and sTotalBtc >= cfg.smartCollectTarget and
-                        now - cfg.lastCollectTime > 300 then
-                        if not data.pendingCollectLocked then
-                            if cfg.randomDelayEnabled then
-                                local delay = math.random(cfg.randomDelayMin * 60, cfg.randomDelayMax * 60)
-                                data.pendingCollectAt = now + delay
-                                data.pendingCollectLocked = true
-                                smartPendingNotified = false
-                                utils.debugChat(string.format("[SMART] Рандомная задержка: %d сек.", delay))
-                            else
-                                cfg.lastCollectTime = now; save()
-                                smartCountdownNotified = false
-                                if cfg.notifyAutoCollectEnabled then
-                                    data.notifyWindow.mode       = 'collecting'
-                                    data.notifyWindow.autoHideAt = 0
-                                    data.notifyWindow.show[0]    = true
-                                end
-                                runSilentCollect(true)
-                            end
-                        end
-                    end
-
-                    if data.pendingCollectLocked then
-                        if sHasData and sTotalBtc < cfg.smartCollectTarget * 0.5 then
-                            data.pendingCollectLocked = false
-                            smartPendingNotified = false
-                            utils.debugChat("[SMART] BTC упал ниже 50% цели, сброс задержки.")
-                        elseif now >= data.pendingCollectAt then
-                            data.pendingCollectLocked = false
-                            cfg.lastCollectTime = now; save()
-                            smartCountdownNotified = false
-                            smartPendingNotified = false
-                            if cfg.notifyAutoCollectEnabled then
-                                data.notifyWindow.mode       = 'collecting'
-                                data.notifyWindow.autoHideAt = 0
-                                data.notifyWindow.show[0]    = true
-                            end
-                            runSilentCollect(true)
-                        elseif cfg.notifyAutoCollectEnabled then
-                            local pendLeft = data.pendingCollectAt - now
-                            if pendLeft > 0 and pendLeft <= cfg.notifyBeforeSec and not smartPendingNotified then
-                                smartPendingNotified              = true
-                                data.notifyWindow.countdownTarget = data.pendingCollectAt
-                                data.notifyWindow.mode            = 'countdown'
-                                data.notifyWindow.autoHideAt      = 0
-                                data.notifyWindow.show[0]         = true
-                            end
-                        end
+            if cfg.autoTopUpEnabled and cfg.autoTopUpByThreshold and now % 300 < 2 then
+                local needsTopUp = false
+                for _, house in ipairs(data.dialogData.flashminer) do
+                    if shouldProcessHouse(house) and house.balance < cfg.autoTopUpThreshold then
+                        needsTopUp = true; break
                     end
                 end
-            end
-            if cfg.cheatModeEnabled and cfg.autoPayTaxesEnabled and cfg.autoPayTaxesByTimer then
-                if not data.working then
-                    local taxSecsLeft = (cfg.lastTaxPayTime + cfg.autoPayTaxesInterval * 3600) - now
-                    if taxSecsLeft <= 0 then
-                        withSilentFlashminer(function()
-                            local task = buildTaskTable('autoPayTaxes')
-                            task:run()
-                            wait(500)
-                            while data.working do wait(200) end
-                        end)
-                    end
-                end
+                if needsTopUp then runSilentTask('autoTopUp') end
             end
 
-            if cfg.cheatModeEnabled and cfg.autoTopUpEnabled and cfg.autoTopUpByTimer then
-                if not data.working then
-                    local topSecsLeft = (cfg.lastAutoTopUpTime + cfg.autoTopUpTimerInterval * 3600) - now
-                    if topSecsLeft <= 0 then
-                        withSilentFlashminer(function()
-                            local task = buildTaskTable('autoTopUp')
-                            task:run()
-                            wait(500)
-                            while data.working do wait(200) end
-                        end)
-                    end
-                end
+            if cfg.autoRefreshEnabled
+                and (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) <= now then
+                runSilentRefresh()
             end
 
-            if cfg.cheatModeEnabled and cfg.autoTopUpEnabled and cfg.autoTopUpByThreshold then
-                if not data.working and now % 300 < 2 then
-                    local needsTopUp = false
-                    for _, house in ipairs(data.dialogData.flashminer) do
-                        if shouldProcessHouse(house) and house.balance < cfg.autoTopUpThreshold then
-                            needsTopUp = true; break
-                        end
-                    end
-                    if needsTopUp then
-                        withSilentFlashminer(function()
-                            local task = buildTaskTable('autoTopUp')
-                            task:run()
-                            wait(500)
-                            while data.working do wait(200) end
-                        end)
-                    end
-                end
-            end
-
-            if cfg.cheatModeEnabled and cfg.autoRefreshEnabled then
-                if not data.working then
-                    local refreshSecsLeft = (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) - now
-                    if refreshSecsLeft <= 0 then
-                        runSilentRefresh()
-                    end
-                end
-            end
             ::continue_timer::
         end
     end)
+
     while true do
         wait(0)
         data.lastWindowState.main = data.main[0]
@@ -2008,7 +1894,6 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
 
     if title:find("^{......}Выберите видеокарту") or title:find("^Полка №%d+") or text:find("Баланс Bitcoin") or text:find('Обзор всех видеокарт') then
         data.flashminerSwitchId.direction = 0
-        data.flashminerSwitchId.currentIndex = nil
         data.isFlashminer = title:find("%(дом №%d+%)") ~= nil
         data.dFlashminerId = dialogId
         local houseNum = title:match("дом №(%d+)")
@@ -2145,6 +2030,7 @@ function sampev.onServerMessage(color, text)
             end
             return false
         elseif text:find("необходимо восстановить состояние системы охлаждения") then
+            data.cardSwitchFailed = (data.cardSwitchFailed or 0) + 1
             return false
         elseif text:find("В этом доме нет подвала") or text:find("Жильцы дома не могут совершать") then
             data.houseHasNoBasement = true
@@ -2185,17 +2071,14 @@ function sampev.onSendDialogResponse(dialogId, button, listitem, input)
         local houseCount = #data.dialogData.flashminer
         if listitem == houseCount + 1 then
             local task = buildTaskTable('massSwitchCards')
-            --runTaskAndReopenDialog(function() task:run(true) end)
             task:run(true)
             return false
         elseif listitem == houseCount + 2 then
             local task = buildTaskTable('collectFromAllHouses')
-            --runTaskAndReopenDialog(function() task:run() end)
             task:run()
             return false
         elseif listitem == houseCount + 3 then
             local task = buildTaskTable('massSwitchCards')
-            --runTaskAndReopenDialog(function() task:run(false) end)
             task:run(false)
             return false
         end
@@ -2212,25 +2095,11 @@ function _formatHouseList(text)
 
     local function parseAmount(str)
         if not str then return 0 end
-        local b, kk, k = str:match(":B:%s*([%d%.]+)%s+:KK:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
-        if b and kk and k then
-            return math.floor(tonumber((b:gsub('%.', ''))) * 1e9 + tonumber((kk:gsub('%.', ''))) * 1e6 +
-                tonumber((k:gsub('%.', ''))))
-        end
-        b, kk = str:match(":B:%s*([%d%.]+)%s+:KK:%s*([%d%.]+)")
-        if b and kk then
-            return math.floor(tonumber((b:gsub('%.', ''))) * 1e9 + tonumber((kk:gsub('%.', ''))) * 1e6)
-        end
-        b, k = str:match(":B:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
-        if b and k then
-            return math.floor(tonumber((b:gsub('%.', ''))) * 1e9 + tonumber((k:gsub('%.', ''))))
-        end
+        local kk, k = str:match(":KK:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
         kk, k = str:match(":KK:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
         if kk and k then
             return math.floor(tonumber((kk:gsub('%.', ''))) * 1e6 + tonumber((k:gsub('%.', ''))))
         end
-        b = str:match(":B:%s*([%d%.]+)")
-        if b then return math.floor(tonumber((b:gsub('%.', ''))) * 1e9) end
         kk = str:match(":KK:%s*([%d%.]+)")
         if kk then return math.floor(tonumber((kk:gsub('%.', ''))) * 1e6) end
         k = str:match(":K:%s*([%d%.]+)")
@@ -2575,7 +2444,7 @@ function buildTaskTable(taskType, ...)
             if data.isRodina then
                 utils.pressButton(1024)
                 wait(1000)
-                while not (sampIsDialogActive() and sampGetCurrentDialogId() == self.data.mainId) do wait(50) end
+                while not (sampIsDialogActive() and sampGetCurrentDialogId() == data.dFlashminerId) do wait(50) end
             else
                 dialogActions.closeDialog(sendResponse, dialogIdTable.videoCardDialogId)
             end
@@ -2599,13 +2468,16 @@ function buildTaskTable(taskType, ...)
 
         if #cardsToSwitch == 0 then return 0 end
 
+        data.cardSwitchFailed = 0
         for idx, card in ipairs(cardsToSwitch) do
             progressTracker.increment(true)
             dialogActions.selectCard(sendResponse, card.index - 1)
             dialogActions.switchCard(sendResponse)
         end
+        wait(250)
 
-        return #cardsToSwitch
+        local failed = data.cardSwitchFailed or 0
+        return math.max(0, #cardsToSwitch - failed)
     end
     local function createProtectedTask(taskFunction, ...)
         local args = { ... }
@@ -2742,28 +2614,25 @@ function buildTaskTable(taskType, ...)
                         refill_count = 1
                     end
 
-                    coolantBottles = coolantBottles + refill_count
-                    actuallyFilled = actuallyFilled + 1
-
                     for i = 1, refill_count do
                         if data.stopAction then break end
                         dialogActions.selectCard(sendResponse, card.index - 1)
                         dialogActions.refillCoolant(sendResponse, card.fluidType, effectiveSuper,
                             card.card_type == "ASIC")
                     end
+
+                    wait(200)
+
                     if not data.stopAction then
+                        actuallyFilled = actuallyFilled + 1
+                        coolantBottles = coolantBottles + refill_count
+                        card.coolant = 100
                         dialogActions.closeDialog(sendResponse, dialogIdTable.videoCardDialogId)
                     end
                 end
 
-                if actuallyFilled > 0 and not data.stopAction then
+                if actuallyFilled > 0 then
                     addCoolantLogEntry(actuallyFilled, coolantBottles, cfg.useSuperCoolant)
-                elseif actuallyFilled > 0 and data.stopAction then
-                    local filledBeforeStop = math.max(0, actuallyFilled - 1)
-                    if filledBeforeStop > 0 then
-                        addCoolantLogEntry(filledBeforeStop,
-                            math.max(0, coolantBottles - 1), cfg.useSuperCoolant)
-                    end
                 end
             end)
         end
@@ -2807,7 +2676,7 @@ function buildTaskTable(taskType, ...)
                 wait(300)
                 local earnings, hasEarnings = formatEarnings(
                     data.withdraw.btc, data.withdraw.asc,
-                    not data.isRodina, "{ffffff} и ", true
+                    not data.isRodina, "{ffffff} и "
                 )
                 if hasEarnings then
                     utils.addChat("Выведено: " .. earnings .. "{ffffff}.")
@@ -2893,7 +2762,7 @@ function buildTaskTable(taskType, ...)
                 utils.addChat("{BEF781}Обход всех домов завершен.")
                 local earnings, hasEarnings = formatEarnings(
                     data.withdraw.btc, data.withdraw.asc,
-                    not data.isRodina, "{ffffff} и ", true
+                    not data.isRodina, "{ffffff} и "
                 )
                 if hasEarnings then
                     utils.addChat("Всего собрано: " .. earnings .. "{ffffff}.")
@@ -3009,13 +2878,6 @@ function buildTaskTable(taskType, ...)
                         count   = totalSwitched,
                         houses  = housesActuallySwitched
                     })
-                end
-                if enable then
-                    data.cardsOnTime = os.time()
-                elseif data.cardsOnTime > 0 then
-                    local worked = os.time() - data.cardsOnTime
-                    addLogEntry('worktime', { seconds = worked })
-                    data.cardsOnTime = 0
                 end
             end, enable)
         end
@@ -3226,7 +3088,7 @@ function buildTaskTable(taskType, ...)
                 wait(300)
                 local report = {}
                 local earnings, hasEarnings = formatEarnings(summary.btc_collected, summary.asc_collected,
-                    not data.isRodina, " и ", true)
+                    not data.isRodina, " и ")
                 if hasEarnings then
                     table.insert(report, "Собрано: " .. earnings)
                 end
@@ -3454,8 +3316,20 @@ function withSilentFlashminer(callback)
     return result ~= false
 end
 
+function runSilentTask(taskName, arg)
+    if data.working then return false end
+    return withSilentFlashminer(function()
+        local task = buildTaskTable(taskName)
+        task:run(arg)
+        wait(500)
+        while data.working do wait(200) end
+    end)
+end
+
 imgui.OnInitialize(function()
     imgui.GetIO().IniFilename = nil
+    imgui.GetIO().MouseDrawCursor = true
+    imgui.GetStyle().MouseCursorScale = 1
     local config = imgui.ImFontConfig()
     config.MergeMode = true
     config.PixelSnapH = true
@@ -4888,7 +4762,7 @@ imgui.OnFrame(
     function(self)
         applyStyle()
         local sw, sh = getScreenResolution()
-        imgui.SetNextWindowSize(imgui.ImVec2(720, 615), imgui.Cond.FirstUseEver)
+        imgui.SetNextWindowSize(imgui.ImVec2(720, 645), imgui.Cond.FirstUseEver)
         imgui.SetNextWindowPos(
             imgui.ImVec2(cfg.logsWindowPosX * sw, cfg.logsWindowPosY * sh),
             imgui.Cond.FirstUseEver
@@ -5033,51 +4907,23 @@ imgui.OnFrame(
                 imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
                 if imgui.BeginChild("##logsRightCol", imgui.ImVec2(colW, 0), true,
                         imgui.WindowFlags.NoScrollWithMouse) then
-                    imgui.TextColoredRGB("{FFA500}Общая статистика")
-                    imgui.Separator()
-
-                    local statBtc, statAsc = 0, 0
-                    local statCollectSessions = 0
-                    local statSwitchOn, statSwitchOff = 0, 0
-                    local statCoolantCards, statCoolantBottles, statCoolantSuper = 0, 0, 0
-                    local statTopup = 0
-                    local statWorkedSeconds = 0
-
-                    for _, dayEntries in pairs(logs) do
-                        for _, e in ipairs(dayEntries) do
-                            local act = e.action or 'collect'
-                            if act == 'collect' then
-                                statBtc = statBtc + (e.btc or 0)
-                                statAsc = statAsc + (e.asc or 0)
-                                statCollectSessions = statCollectSessions + 1
-                            elseif act == 'switch' then
-                                if e.enabled then
-                                    statSwitchOn = statSwitchOn + (e.count or 0)
-                                else
-                                    statSwitchOff = statSwitchOff + (e.count or 0)
-                                end
-                            elseif act == 'coolant' then
-                                statCoolantCards = statCoolantCards + (e.count or 0)
-                                if e.super then
-                                    statCoolantSuper = statCoolantSuper + (e.bottles or 0)
-                                else
-                                    statCoolantBottles = statCoolantBottles + (e.bottles or 0)
-                                end
-                            elseif act == 'fix' then
-                                statBtc = statBtc + (e.btc or 0)
-                                statAsc = statAsc + (e.asc or 0)
-                                statSwitchOn = statSwitchOn + (e.cards or 0)
-                                statTopup = statTopup + (e.topup or 0)
-                            elseif act == 'topup' then
-                                statTopup = statTopup + (e.topup or 0)
-                            elseif act == 'worktime' then
-                                statWorkedSeconds = statWorkedSeconds + (e.seconds or 0)
+                    local periodLabels = { u8 "Всё время", u8 "Сегодня", u8 "Неделя", u8 "Месяц" }
+                    imgui.PushItemWidth(-1)
+                    if imgui.BeginCombo("##logsPeriod", periodLabels[data.logsPeriodFilter + 1]) then
+                        for pi = 1, #periodLabels do
+                            local pSel = data.logsPeriodFilter == pi - 1
+                            if imgui.Selectable(periodLabels[pi], pSel) then
+                                data.logsPeriodFilter = pi - 1
                             end
                         end
+                        imgui.EndCombo()
                     end
-                    if data.cardsOnTime > 0 then
-                        statWorkedSeconds = statWorkedSeconds + (os.time() - data.cardsOnTime)
-                    end
+                    imgui.PopItemWidth()
+                    imgui.Spacing()
+                    imgui.Separator()
+
+                    local stats = getLogsStats(data.logsPeriodFilter)
+
                     local function StatRow(icon, label, value, color, hint)
                         imgui.BeginGroup()
                         imgui.Text(icon)
@@ -5090,53 +4936,36 @@ imgui.OnFrame(
                     end
 
                     imgui.TextColoredRGB("{87CEFA}Криптовалюта:")
-                    StatRow(fa.COINS, "Получено BTC:", string.format("%d", statBtc), "{BEF781}",
+                    StatRow(fa.COINS, "Получено BTC:", tostring(stats.btc), "{BEF781}",
                         "Суммарное количество BTC собранного со всех ферм")
-
-                    StatRow(fa.COINS, "Получено ASC:", string.format("%d", statAsc), "{FFA500}",
+                    StatRow(fa.COINS, "Получено ASC:", tostring(stats.asc), "{FFA500}",
                         "Суммарное количество ASC собранного со всех ферм")
-
-                    StatRow(fa.ROTATE, "Сессий сбора:", string.format("%d", statCollectSessions), "{FFFFFF}",
+                    StatRow(fa.ROTATE, "Сессий сбора:", tostring(stats.collectSessions), "{FFFFFF}",
                         "Количество запусков сбора криптовалюты")
                     imgui.Spacing()
 
                     imgui.TextColoredRGB("{87CEFA}Видеокарты:")
-                    StatRow(fa.POWER_OFF, "Включено карт:", string.format("%d", statSwitchOn), "{BEF781}",
+                    StatRow(fa.POWER_OFF, "Включено карт:", tostring(stats.switchOn),"{BEF781}",
                         "Суммарное количество включённых видеокарт за всё время")
-                    StatRow(fa.PLUG, "Выключено карт:", string.format("%d", statSwitchOff), "{F78181}",
+                    StatRow(fa.PLUG, "Выключено карт:", tostring(stats.switchOff), "{F78181}",
                         "Суммарное количество выключённых видеокарт за всё время")
                     imgui.Spacing()
 
-                    imgui.TextColoredRGB("{87CEFA}Время:")
-                    local wh = math.floor(statWorkedSeconds / 3600)
-                    local wm = math.floor((statWorkedSeconds % 3600) / 60)
-                    local timeLabel = data.cardsOnTime > 0
-                        and "Ферма работает:"
-                        or "Ферма работала:"
-                    local timeColor = data.cardsOnTime > 0 and "{BEF781}" or "{808080}"
-                    StatRow(fa.CLOCK, timeLabel,
-                        wh > 0 and string.format("%dч %dм", wh, wm) or string.format("%dм", wm),
-                        timeColor,
-                        data.cardsOnTime > 0
-                        and "Время работы ферм (сейчас активно, обновляется)"
-                        or "Суммарное время работы ферм")
-                    imgui.Spacing()
-
                     imgui.TextColoredRGB("{87CEFA}Охлаждение:")
-                    StatRow(fa.DROPLET, "Карт залито:", string.format("%d", statCoolantCards), "{FFFFFF}",
+                    StatRow(fa.DROPLET, "Карт залито:", tostring(stats.coolantCards), "{FFFFFF}",
                         "Количество видеокарт которым заливалась жидкость")
 
-                    StatRow(fa.DROPLET, "Обычной:", string.format("%d шт.", statCoolantBottles), "{87CEFA}",
+                    StatRow(fa.DROPLET, "Обычной:", stats.coolantBottles .. " шт.", "{87CEFA}",
                         "Количество флаконов обычной охлаждающей жидкости")
 
-                    StatRow(fa.DROPLET, "Супер:", string.format("%d шт.", statCoolantSuper), "{FFE133}",
+                    StatRow(fa.DROPLET, "Супер:", stats.coolantSuper .. " шт.", "{FFE133}",
                         "Количество флаконов супер охлаждающей жидкости")
                     imgui.Spacing()
 
                     imgui.TextColoredRGB("{87CEFA}Обслуживание:")
 
-                    StatRow(fa.DOLLAR_SIGN, "Ферм пополнено на:", "$" .. utils.formatNumber(statTopup), "{FFD700}",
-                        "Суммарная сумма пополнений баланса домов через авто-обслуживание")
+                    StatRow(fa.DOLLAR_SIGN, "Ферм пополнено на:", "$" .. utils.formatNumber(stats.topup), "{FFD700}",
+                        "Общая сумма пополнений баланса домов")
                     imgui.Spacing()
 
                     imgui.TextColoredRGB("{87CEFA}Всего:")
@@ -5193,6 +5022,8 @@ imgui.OnFrame(
                     imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
                     if imgui.BeginChild("##daysLeft", imgui.ImVec2(140, 0), true,
                             imgui.WindowFlags.NoScrollWithMouse) then
+                        imgui.Scroller("logs_days_left", 38, 300,
+                            imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
                         for i, dateStr in ipairs(dates) do
                             local isSelected = (data.logsTab[0] == i - 1)
                             local ds = dailySums[dateStr]
@@ -5203,7 +5034,7 @@ imgui.OnFrame(
                                 imgui.ImVec4(0.18, 0.27, 0.42, 1))
 
                             if imgui.Selectable("##sel_" .. dateStr, isSelected,
-                                    0, imgui.ImVec2(0, 38)) then
+                                    0, imgui.ImVec2(0, 30)) then
                                 data.logsTab[0] = i - 1
                             end
                             imgui.PopStyleColor(2)
@@ -5304,6 +5135,7 @@ imgui.OnFrame(
                             logs = {}
                             saveLogs()
                             logsCache = { collectBtc = 0, collectAsc = 0, sessions = 0 }
+                            invalidateLogsStats()
                             data.logsResetConfirm = false
                             utils.addChat("{F78181}Логи очищены.")
                         end
@@ -5530,6 +5362,17 @@ local function filterAndSortHouses(houses)
     end
     table.sort(availableLevels)
 
+    local availableCities = {}
+    local citiesSet = {}
+    for _, house in ipairs(houses) do
+        local city = (house.city and house.city ~= "") and house.city or "Неизвестно"
+        if not citiesSet[city] then
+            citiesSet[city] = true
+            table.insert(availableCities, city)
+        end
+    end
+    table.sort(availableCities)
+
     for _, house in ipairs(houses) do
         local status = data.houseStatuses[house.house_number]
         local isKnownNoBasement = hasNoBasement(house.house_number)
@@ -5564,6 +5407,16 @@ local function filterAndSortHouses(houses)
             if not matchesAny then goto continue end
         end
 
+        if next(selectedCities) ~= nil then
+            local houseCity = (house.city and house.city ~= "") and house.city or "Неизвестно"
+            local isCityToggled = selectedCities[houseCity] == true
+            if data.cityFilterInvert then
+                if not isCityToggled then goto continue end
+            else
+                if isCityToggled then goto continue end
+            end
+        end
+
         table.insert(filtered, house)
         ::continue::
     end
@@ -5584,20 +5437,15 @@ local function filterAndSortHouses(houses)
             return va > vb
         end)
     elseif sortIdx == 2 then
-        table.sort(filtered, function(a, b)
-            local va, vb = a.city or "", b.city or ""
-            if va == vb then return a.house_number < b.house_number end
-            if cfg.sortAscending then return va < vb end
-            return va > vb
-        end)
-    elseif sortIdx == 3 then
+        -- Циклы
         table.sort(filtered, function(a, b)
             local va, vb = a.cycles or 0, b.cycles or 0
             if va == vb then return a.house_number < b.house_number end
             if cfg.sortAscending then return va < vb end
             return va > vb
         end)
-    elseif sortIdx == 4 then
+    elseif sortIdx == 3 then
+        -- Жидкость
         table.sort(filtered, function(a, b)
             local sA = data.houseStatuses[a.house_number]
             local sB = data.houseStatuses[b.house_number]
@@ -5607,7 +5455,8 @@ local function filterAndSortHouses(houses)
             if cfg.sortAscending then return va < vb end
             return va > vb
         end)
-    elseif sortIdx == 5 then
+    elseif sortIdx == 4 then
+        -- Видеокарты
         table.sort(filtered, function(a, b)
             local sA = data.houseStatuses[a.house_number]
             local sB = data.houseStatuses[b.house_number]
@@ -5630,9 +5479,17 @@ local function filterAndSortHouses(houses)
             if cfg.sortAscending then return countA < countB end
             return countA > countB
         end)
+    elseif sortIdx == 5 then
+        -- Город
+        table.sort(filtered, function(a, b)
+            local va, vb = a.city or "", b.city or ""
+            if va == vb then return a.house_number < b.house_number end
+            if cfg.sortAscending then return va < vb end
+            return va > vb
+        end)
     end
 
-    return filtered, availableLevels
+    return filtered, availableLevels, availableCities
 end
 
 -- флешка майнера
@@ -5646,7 +5503,7 @@ imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(pla
             imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize) then
         imgui.customTitleBar(data.showHouseControlWindow, resetDefaultCfg, imgui.GetWindowWidth())
 
-        local filteredHouses, availableLevels = filterAndSortHouses(data.dialogData.flashminer)
+        local filteredHouses, availableLevels, availableCities = filterAndSortHouses(data.dialogData.flashminer)
         data.filteredHouses = filteredHouses
         -- Подсчет статистики
         local totalHouses = #data.dialogData.flashminer
@@ -5684,6 +5541,21 @@ imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(pla
             housesGood, housesWarning, housesBad = counters.good, counters.warning, counters.bad
 
             ::continue::
+        end
+
+        local nearestMaintenanceHours = nil
+        local nearestMaintenanceHouse = nil
+        for _, house in ipairs(data.dialogData.flashminer) do
+            if shouldProcessHouse(house) then
+                local status = data.houseStatuses[house.house_number]
+                if status and status.lastCheck > 0 and status.minCoolant and status.minCoolant <= 100 then
+                    local hours = utils.calculateRemainingHours(status.minCoolant)
+                    if not nearestMaintenanceHours or hours < nearestMaintenanceHours then
+                        nearestMaintenanceHours = hours
+                        nearestMaintenanceHouse = house.house_number
+                    end
+                end
+            end
         end
 
         -- Расчет общего дохода
@@ -5759,40 +5631,48 @@ imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(pla
 
         local statusText = #parts > 0 and table.concat(parts, " {FFFFFF}/ ") or "{808080}Не проверено"
 
-        local statusHint = "{FFFFFF}Сводка по состоянию домов:\n--------------------\n"
-        local hasIssues = false
+        local hintLines = {
+            "{FFFFFF}Сводка по состоянию домов:",
+            "--------------------",
+        }
 
+        local function appendIssues(title, issuesMap)
+            table.insert(hintLines, title)
+            for houseNum, issues in pairs(issuesMap) do
+                table.insert(hintLines, "  {FFA500}Дом №" .. houseNum .. ":")
+                for _, issue in ipairs(issues) do
+                    table.insert(hintLines, "    • " .. issue)
+                end
+            end
+            table.insert(hintLines, "")
+        end
+
+        local hasIssues = false
         if next(badHousesIssues) ~= nil then
             hasIssues = true
-            statusHint = statusHint .. fa.CIRCLE_EXCLAMATION .. " {FF3333}Критические проблемы:\n"
-            for houseNum, issues in pairs(badHousesIssues) do
-                statusHint = statusHint .. "  {FFA500}Дом №" .. houseNum .. ":\n"
-                for _, issue in ipairs(issues) do
-                    statusHint = statusHint .. "    • " .. issue .. "\n"
-                end
-            end
-            statusHint = statusHint .. "\n"
+            appendIssues(fa.CIRCLE_EXCLAMATION .. " {FF3333}Критические проблемы:", badHousesIssues)
         end
-
         if next(warningHousesIssues) ~= nil then
             hasIssues = true
-            statusHint = statusHint .. fa.TRIANGLE_EXCLAMATION .. " {FFE133}Требуют внимания:\n"
-            for houseNum, issues in pairs(warningHousesIssues) do
-                statusHint = statusHint .. "  {FFA500}Дом №" .. houseNum .. ":\n"
-                for _, issue in ipairs(issues) do
-                    statusHint = statusHint .. "    • " .. issue .. "\n"
-                end
-            end
-            statusHint = statusHint .. "\n"
+            appendIssues(fa.TRIANGLE_EXCLAMATION .. " {FFE133}Требуют внимания:", warningHousesIssues)
         end
-
         if not hasIssues then
-            statusHint = statusHint .. fa.CIRCLE_CHECK .. " {4DE94C}Проблем не обнаружено.\n\n"
+            table.insert(hintLines, fa.CIRCLE_CHECK .. " {4DE94C}Проблем не обнаружено.")
+            table.insert(hintLines, "")
         end
 
-        statusHint = statusHint .. "--------------------\n"
-        statusHint = statusHint ..
-            string.format("{87CEFA}Всего требуется охлаждаек: {FFFFFF}%d шт.", totalCoolantsAll)
+        table.insert(hintLines, "--------------------")
+        table.insert(hintLines, string.format(
+            "{87CEFA}Всего требуется охлаждаек: {FFFFFF}%d шт.", totalCoolantsAll))
+
+        if nearestMaintenanceHouse and nearestMaintenanceHours then
+            table.insert(hintLines, "")
+            table.insert(hintLines, string.format(
+                "{FFA500}Ближайшее обслуживание:\n{FFFFFF}~%dч — Дом №%d",
+                math.floor(nearestMaintenanceHours), nearestMaintenanceHouse))
+        end
+
+        local statusHint = table.concat(hintLines, "\n")
 
         DrawStatTile("status", fa.CHART_PIE, "{87CEFA}Состояние:", statusText, "{FFFFFF}", statusHint)
 
@@ -5955,15 +5835,16 @@ imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(pla
             for i = 1, #sortItems do
                 local isSelected = (imcfg.currentSort[0] == i - 1)
 
-                if i == 6 then
+                if i == 5 then
+                    -- По видеокартам
                     local startPos = imgui.GetCursorPos()
                     local itemW = imgui.GetContentRegionAvail().x
                     local screenPos = imgui.GetCursorScreenPos()
 
-                    imgui.Selectable("##sort6", isSelected, 0, imgui.ImVec2(itemW, 0))
+                    imgui.Selectable("##sort5", isSelected, 0, imgui.ImVec2(itemW, 0))
                     if imgui.IsItemClicked() then
-                        imcfg.currentSort[0] = 5
-                        cfg.currentSort = 5
+                        imcfg.currentSort[0] = 4
+                        cfg.currentSort = 4
                         save()
                     end
                     if imgui.IsItemHovered() then
@@ -5975,6 +5856,34 @@ imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(pla
                         }
                         imgui.OpenPopup("##levelFilterPopup")
                         data.levelFilterOpenTime = os.clock()
+                    end
+                    imgui.SetCursorPos(startPos)
+                    imgui.BeginGroup()
+                    imgui.Text(sortItems[i])
+                    imgui.SameLine()
+                    imgui.Text(fa.CARET_RIGHT)
+                    imgui.EndGroup()
+                elseif i == 6 then
+                    -- По городу
+                    local startPos = imgui.GetCursorPos()
+                    local itemW = imgui.GetContentRegionAvail().x
+                    local screenPos = imgui.GetCursorScreenPos()
+
+                    imgui.Selectable("##sort6", isSelected, 0, imgui.ImVec2(itemW, 0))
+                    if imgui.IsItemClicked() then
+                        imcfg.currentSort[0] = 5
+                        cfg.currentSort = 5
+                        save()
+                    end
+                    if imgui.IsItemHovered() then
+                        data.cityFilterItemRect = {
+                            x1 = screenPos.x,
+                            y1 = screenPos.y,
+                            x2 = screenPos.x + itemW,
+                            y2 = screenPos.y + imgui.GetTextLineHeightWithSpacing()
+                        }
+                        imgui.OpenPopup("##cityFilterPopup")
+                        data.cityFilterOpenTime = os.clock()
                     end
                     imgui.SetCursorPos(startPos)
                     imgui.BeginGroup()
@@ -6078,6 +5987,111 @@ imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(pla
                         imgui.Text(u8(string.format("Уровень %d", lvl)))
                         imgui.SameLine(0, 5)
                         imgui.TextDisabled(string.format("(%d)", count))
+                        imgui.EndGroup()
+                    end
+                end
+
+                imgui.EndPopup()
+            end
+            imgui.SetNextWindowPos(
+                imgui.ImVec2(
+                    imgui.GetWindowPos().x + imgui.GetWindowSize().x + 2,
+                    imgui.GetWindowPos().y + 85
+                ),
+                imgui.Cond.Always
+            )
+            if imgui.BeginPopup("##cityFilterPopup") then
+                local winPos = imgui.GetWindowPos()
+                local winSize = imgui.GetWindowSize()
+                local mousePos = imgui.GetIO().MousePos
+
+                local timeSinceOpen = (os.clock() - data.cityFilterOpenTime) * 1000
+                if timeSinceOpen > 200 and winSize.x > 10 then
+                    local isOverPopup = mousePos.x >= winPos.x - 30
+                        and mousePos.x <= winPos.x + winSize.x + 5
+                        and mousePos.y >= winPos.y - 5
+                        and mousePos.y <= winPos.y + winSize.y + 5
+
+                    local isOverComboItem = data.cityFilterItemRect ~= nil
+                        and mousePos.x >= data.cityFilterItemRect.x1
+                        and mousePos.x <= data.cityFilterItemRect.x2
+                        and mousePos.y >= data.cityFilterItemRect.y1
+                        and mousePos.y <= data.cityFilterItemRect.y2
+
+                    if not isOverPopup and not isOverComboItem then
+                        imgui.CloseCurrentPopup()
+                    end
+                end
+
+                -- Переключатель режима
+                local modeLabel = data.cityFilterInvert
+                    and u8 "Только выбранные"
+                    or u8 "Все кроме выбранных"
+                if imgui.Selectable(modeLabel .. "##cityModeToggle", false,
+                        imgui.SelectableFlags.DontClosePopups) then
+                    data.cityFilterInvert = not data.cityFilterInvert
+                end
+                imgui.Hint(data.cityFilterInvert
+                    and "Показывать ТОЛЬКО отмеченные города.\nНажмите для переключения."
+                    or "Скрывать отмеченные города.\nНажмите для переключения.")
+                imgui.Separator()
+
+                local hasAnyCitySel = next(selectedCities) ~= nil
+                if hasAnyCitySel then
+                    if imgui.Selectable(u8 "Сбросить всё", false) then
+                        selectedCities = {}
+                    end
+                else
+                    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0, 0, 0, 0))
+                    imgui.Selectable(u8 "Сбросить всё", false, imgui.SelectableFlags.Disabled)
+                    imgui.PopStyleColor()
+                end
+                imgui.Separator()
+
+                local _, _, availableCities2 = filterAndSortHouses(data.dialogData.flashminer)
+
+                if not availableCities2 or #availableCities2 == 0 then
+                    imgui.TextDisabled(u8 "Нет данных. Откройте /flashminer.")
+                else
+                    for _, city in ipairs(availableCities2) do
+                        local isCitySel = selectedCities[city] == true
+
+                        local cityCount = 0
+                        for _, h in ipairs(data.dialogData.flashminer) do
+                            local c = (h.city and h.city ~= "") and h.city or "Неизвестно"
+                            if c == city then cityCount = cityCount + 1 end
+                        end
+
+                        imgui.PushStyleColor(imgui.Col.HeaderHovered, imgui.ImVec4(0.2, 0.4, 0.8, 0.4))
+                        imgui.PushStyleColor(imgui.Col.Header,
+                            isCitySel and imgui.ImVec4(0.2, 0.5, 0.9, 0.3) or imgui.ImVec4(0, 0, 0, 0))
+
+                        local startPosC = imgui.GetCursorPos()
+                        local itemWC = imgui.GetContentRegionAvail().x
+
+                        if imgui.Selectable("##city_" .. city, isCitySel,
+                                imgui.SelectableFlags.DontClosePopups,
+                                imgui.ImVec2(itemWC, 0)) then
+                            if isCitySel then
+                                selectedCities[city] = nil
+                            else
+                                selectedCities[city] = true
+                            end
+                        end
+                        imgui.PopStyleColor(2)
+
+                        imgui.SetCursorPos(startPosC)
+                        imgui.BeginGroup()
+                        if isCitySel then
+                            imgui.Text(fa.CHECK)
+                            imgui.SameLine(0, 5)
+                        else
+                            local iconWC = imgui.CalcTextSize(fa.CHECK).x
+                            imgui.SetCursorPosX(imgui.GetCursorPosX() + iconWC + 5)
+                        end
+                        imgui.Text(u8(city))
+                        imgui.SameLine(0, 5)
+                        imgui.TextDisabled(string.format("(%d)", cityCount))
                         imgui.EndGroup()
                     end
                 end
