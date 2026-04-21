@@ -1,6 +1,6 @@
 script_name('Mining Tools')
 script_author('JustFedot -- Modified by kernelich')
-script_version('2.4.6')
+script_version('2.4.7')
 script_version_number(2)
 script_description('Скрипт для упрощения майнинга на сервере.')
 
@@ -16,6 +16,12 @@ local fa = require('fAwesome6')
 local raknet = require('samp.raknet')
 local wm = require('windows.message')
 local new = imgui.new
+
+-- Open the file in windows 1251 encoding to make any changes
+
+-- Если не нужна проверка обновлений расскоментируйте строку ниже, а втрорую либо удалите, либо закоментируйте
+--local UPDATE_CHECK_URL = nil
+local UPDATE_CHECK_URL = "https://raw.githubusercontent.com/abc1st/Mining-Tools/main/version.json"
 
 local searchBuffer = new.char[256]()
 local currentStatusFilter = new.int(0)
@@ -258,6 +264,10 @@ local function getDefaultCfg()
         autoRefreshEnabled       = false,
         autoRefreshInterval      = 30,
         lastAutoRefreshTime      = 0,
+        refreshPostponeOnDialog  = true,
+        refreshPostponeMinutes   = 1,
+        waitForConnection        = true,
+        delayAfterConnectMin     = 5,
         randomDelayEnabled       = false,
         randomDelayMin           = 1,
         randomDelayMax           = 120,
@@ -296,6 +306,7 @@ local data = {
     houseStatuses          = {},
     working                = false,
     isFlashminer           = false,
+    hasFlashminer          = nil,
     forImgui               = {
         allGood = false,
         videocardCount = 0,
@@ -359,6 +370,14 @@ local data = {
     cityFilterOpenTime     = 0,
     cityFilterItemRect     = nil,
     cityFilterInvert       = false,
+    connectionState        = {
+        connected         = true,
+        wasDisconnected   = false,
+        readyAfterConnect = 0,
+        lastCheck         = 0,
+    },
+    refreshPostponedUntil  = 0,
+    collectCancelled       = false
 }
 
 local utils = (function()
@@ -503,8 +522,6 @@ function asyncHttpRequest(httpMethod, url, requestBody, successCallback, errorCa
     }
 end
 
-local UPDATE_CHECK_URL = "https://raw.githubusercontent.com/abc1st/Mining-Tools/main/version.json"
-
 local updateState = {
     hasUpdate     = false,
     latestVersion = nil,
@@ -560,6 +577,7 @@ end
 
 function checkForUpdates()
     if not cfg.checkForUpdates or updateState.checking then return end
+    if UPDATE_CHECK_URL == nil then return end
     updateState.checking = true
     utils.debugChat("[UPDATE] Проверяю обновления...")
 
@@ -1090,6 +1108,7 @@ local collectTriggers = {
             return cfg.reminderEnabled
                 and not cfg.autoCollectEnabled
                 and not cfg.smartCollectEnabled
+                and data.hasFlashminer ~= false
         end,
         tick = function(state, now)
             local estBTC, hasData = estimateTotalBTC()
@@ -1139,6 +1158,9 @@ local collectTriggers = {
 local triggerState = { reminder = {}, scheduled = {}, smart = {} }
 
 function runSilentCollect(doUpdateStatuses)
+    if data.hasFlashminer == false then
+        return false
+    end
     data.silentWindowOpen      = true
     data.showLogsWindow[0]     = false
     data.showSettingsWindow[0] = false
@@ -1148,6 +1170,11 @@ function runSilentCollect(doUpdateStatuses)
     local t = 0
     while #data.dialogData.flashminer == 0 and t < 5000 do
         wait(200); t = t + 200
+        if data.collectCancelled then
+            data.collectCancelled = false
+            data.silentWindowOpen = false
+            return false
+        end
     end
     if #data.dialogData.flashminer == 0 then
         data.silentWindowOpen     = false
@@ -1167,15 +1194,39 @@ function runSilentCollect(doUpdateStatuses)
             local updateTask = buildTaskTable('updateStatuses')
             updateTask:run()
             wait(300)
-            while data.working do wait(200) end
+            while data.working do
+                wait(200)
+                if data.collectCancelled then
+                    data.collectCancelled = false
+                    data.silentWindowOpen = false
+                    data.stopAction       = true
+                    return false
+                end
+            end
         end
     end
     wait(300)
-    while data.working do wait(200) end
+    while data.working do
+        wait(200)
+        if data.collectCancelled then
+            data.collectCancelled = false
+            data.silentWindowOpen = false
+            data.stopAction       = true
+            return false
+        end
+    end
     local task = buildTaskTable('collectFromAllHouses')
     task:run()
     wait(500)
-    while data.working do wait(200) end
+    while data.working do
+        wait(200)
+        if data.collectCancelled then
+            data.collectCancelled = false
+            data.silentWindowOpen = false
+            data.stopAction       = true
+            return false
+        end
+    end
     if cfg.autoEnableCardsOnCollect then
         wait(300)
         data.dialogData.flashminer = {}
@@ -1270,7 +1321,13 @@ local function tickTrigger(trig, now)
 
     if secsLeft <= 0 and not data.pendingCollectLocked
         and now - cfg.lastCollectTime > trig.fireThrottleSec() then
-        if cfg.randomDelayEnabled then
+        if cfg.refreshPostponeOnDialog and sampIsDialogActive()
+            and not data.silentWindowOpen then
+            cfg.lastCollectTime = cfg.lastCollectTime + 60
+            utils.debugChat(string.format(
+                "[%s] Диалог открыт — автосбор отложен на 1 мин.",
+                trig.name:upper()))
+        elseif cfg.randomDelayEnabled then
             local delay               = math.random(cfg.randomDelayMin * 60, cfg.randomDelayMax * 60)
             data.pendingCollectAt     = now + delay
             data.pendingCollectLocked = true
@@ -1340,6 +1397,44 @@ function fixI()
         wait(2000)
         data.fix = false
     end)
+end
+
+function isProperlyConnected()
+    if not isSampAvailable() then return false end
+    local name = sampGetCurrentServerName()
+    if not name or name == '' or name == 'SA-MP' then return false end
+    if not sampIsLocalPlayerSpawned() then return false end
+    return true
+end
+
+local function updateConnectionState()
+    local nowConnected = isProperlyConnected()
+    local wasConnected = data.connectionState.connected
+    data.connectionState.lastCheck = os.time()
+
+    if nowConnected == wasConnected then return end
+
+    if nowConnected then
+        data.connectionState.connected = true
+        if cfg.waitForConnection and data.connectionState.wasDisconnected then
+            data.connectionState.readyAfterConnect =
+                os.time() + cfg.delayAfterConnectMin * 60
+            utils.debugChat(string.format(
+                "[CONNECT] Подключение восстановлено. Автодействия отложены на %d мин.",
+                cfg.delayAfterConnectMin))
+        end
+    else
+        data.connectionState.connected = false
+        data.connectionState.wasDisconnected = true
+        utils.debugChat("[CONNECT] Подключение потеряно. Автодействия приостановлены.")
+    end
+end
+
+local function isAutomationAllowed()
+    if not cfg.waitForConnection then return true end
+    if not data.connectionState.connected then return false end
+    if os.time() < data.connectionState.readyAfterConnect then return false end
+    return true
 end
 
 function runTaskAndReopenDialog(taskFunction, ...)
@@ -1620,6 +1715,11 @@ function main()
             wait(1000)
             if not cfg.active then goto continue_timer end
 
+            updateConnectionState()
+            if not isAutomationAllowed() then goto continue_timer end
+
+            if data.hasFlashminer == false then goto continue_timer end
+
             local now = os.time()
             for _, trig in ipairs(collectTriggers) do tickTrigger(trig, now) end
 
@@ -1646,8 +1746,17 @@ function main()
             end
 
             if cfg.autoRefreshEnabled
-                and (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) <= now then
-                runSilentRefresh()
+                and (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) <= now
+                and now >= (data.refreshPostponedUntil or 0) then
+                if cfg.refreshPostponeOnDialog and sampIsDialogActive()
+                    and not data.silentWindowOpen then
+                    data.refreshPostponedUntil = now + cfg.refreshPostponeMinutes * 60
+                    utils.debugChat(string.format(
+                        "[REFRESH] Диалог открыт — обновление отложено на %d мин.",
+                        cfg.refreshPostponeMinutes))
+                else
+                    runSilentRefresh()
+                end
             end
 
             ::continue_timer::
@@ -1750,6 +1859,15 @@ local massActionTypes = {
 
 function sampev.onShowDialog(dialogId, style, title, button1, button2, text, placeholder)
     if not cfg.active then return end
+
+    if title:find("Телефоны") and text:find("Мобильное устройство") then
+        sampSendDialogResponse(dialogId, 1, 0, "")
+        return false
+    end
+    if title:find("Оплата всех налогов") and text:find("нет налогов") and data.taskTypeNow == 'autoPayTaxes' then
+        sampSendDialogResponse(dialogId, 1, 0, "")
+        return false
+    end
     if title:find("Выберите полку") then
         local currentIndex = 0
         for line in text:gmatch("[^\r\n]+") do
@@ -1771,6 +1889,7 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
 
     if title:find("Выбор дома") then
         if text:match("циклов %(") then
+            data.hasFlashminer = true
             data.isFlashminer = true
             data.dFlashminerId = dialogId
             _formatHouseList(text)
@@ -1986,6 +2105,12 @@ end
 function sampev.onServerMessage(color, text)
     if not cfg.active then return end
 
+    if text:find("У вас нет флешки майнера") then
+        data.stopAction = true
+        data.hasFlashminer = false
+        utils.addChat("У вас нет флешки майнера!")
+        return false
+    end
     if text:find('data_center_kwt') then
         return false
     end
@@ -2012,6 +2137,7 @@ function sampev.onServerMessage(color, text)
     elseif text:find("Выводить прибыль можно только целыми частями") then
         return false
     elseif text:find("Выберите дом с майнинг фермой") then
+        data.hasFlashminer = true
         return false
     elseif text:find("Не забудьте запустить видеокарту") then
         return false
@@ -3526,12 +3652,26 @@ imgui.OnFrame(
         if _nAlpha < 0.005 then return end
 
         applyStyle()
-        local sw, sh = getScreenResolution()
+        local sw, sh       = getScreenResolution()
 
-        imgui.SetNextWindowPos(
-            imgui.ImVec2(cfg.notifyWindowPosX * sw, cfg.notifyWindowPosY * sh),
-            imgui.Cond.Appearing
-        )
+        local isPreview    = data.notifyWindow.autoHideAt > 0
+        local isActionMode = data.notifyWindow.mode == 'countdown'
+            or data.notifyWindow.mode == 'collecting'
+        local isChatOpen   = sampIsChatInputActive()
+
+        self.HideCursor    = not (isPreview or isChatOpen)
+
+        if isPreview then
+            imgui.SetNextWindowPos(
+                imgui.ImVec2(cfg.notifyWindowPosX * sw, cfg.notifyWindowPosY * sh),
+                imgui.Cond.Appearing
+            )
+        else
+            imgui.SetNextWindowPos(
+                imgui.ImVec2(cfg.notifyWindowPosX * sw, cfg.notifyWindowPosY * sh),
+                imgui.Cond.Always
+            )
+        end
 
         imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.06, 0.07, 0.10, 0.96 * _nAlpha))
         imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.24, 0.30, 0.90 * _nAlpha))
@@ -3539,31 +3679,60 @@ imgui.OnFrame(
         imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(0.20, 0.22, 0.27, 0.50 * _nAlpha))
         imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.13, 0.14, 0.19, _nAlpha))
 
-        local isPreview = data.notifyWindow.autoHideAt > 0
-        if not isPreview then
-            self.HideCursor = true
-        end
-        local flags = imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar +
-            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoResize +
-            imgui.WindowFlags.AlwaysAutoResize + 4096 + (isPreview and 0 or 512)
+        local flags = imgui.WindowFlags.NoCollapse
+            + imgui.WindowFlags.NoTitleBar
+            + imgui.WindowFlags.NoScrollbar
+            + imgui.WindowFlags.NoResize
+            + imgui.WindowFlags.AlwaysAutoResize
+            + 4096
+            + (isPreview and 0 or 512)
+            + (isPreview and 0 or imgui.WindowFlags.NoMove)
 
         if imgui.Begin("##mntNotify", data.notifyWindow.show, flags) then
-            local wp = imgui.GetWindowPos()
-            local nx, ny = wp.x / sw, wp.y / sh
-            if math.abs(nx - cfg.notifyWindowPosX) > 0.003 or
-                math.abs(ny - cfg.notifyWindowPosY) > 0.003 then
-                cfg.notifyWindowPosX, cfg.notifyWindowPosY = nx, ny
-                local t = os.clock()
-                if t - _nSaveT > 1.5 then
-                    _nSaveT = t; save()
+            if isPreview then
+                local wp = imgui.GetWindowPos()
+                local nx, ny = wp.x / sw, wp.y / sh
+                if math.abs(nx - cfg.notifyWindowPosX) > 0.003 or
+                    math.abs(ny - cfg.notifyWindowPosY) > 0.003 then
+                    cfg.notifyWindowPosX, cfg.notifyWindowPosY = nx, ny
+                    local t = os.clock()
+                    if t - _nSaveT > 1.5 then
+                        _nSaveT = t; save()
+                    end
                 end
             end
 
-            local mode = data.notifyWindow.mode
+            if isActionMode and isChatOpen then
+                local wp = imgui.GetWindowPos()
+                local ws = imgui.GetWindowSize()
+                local mx = imgui.GetIO().MousePos.x
+                local my = imgui.GetIO().MousePos.y
+                local inWindow = mx >= wp.x and mx <= wp.x + ws.x
+                    and my >= wp.y and my <= wp.y + ws.y
+
+                if inWindow and imgui.GetIO().MouseClicked[1] then
+                    data.pendingCollectLocked = false
+                    data.pendingCollectAt     = 0
+                    data.collectCancelled     = true
+                    data.stopAction           = true
+                    for _, st in pairs(triggerState) do
+                        st.countdownNotified = false
+                        st.pendingNotified   = false
+                    end
+                    cfg.lastCollectTime = os.time()
+                    save()
+                    data.notifyWindow.show[0] = false
+                end
+            end
+
+            local mode     = data.notifyWindow.mode
+            local secsLeft = (mode == 'countdown')
+                and (data.notifyWindow.countdownTarget - os.time()) or 0
 
             imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.COINS)
             imgui.SameLine(0, 6)
             imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), u8 "Mining Tools")
+
             imgui.Separator()
             imgui.Spacing()
 
@@ -3577,7 +3746,6 @@ imgui.OnFrame(
                 imgui.SameLine(0, 6)
                 imgui.TextColored(imgui.ImVec4(0.6, 0.6, 0.6, _nAlpha), u8 "Рекомендуется собрать криптовалюту.")
             elseif mode == 'countdown' then
-                local secsLeft = data.notifyWindow.countdownTarget - os.time()
                 imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.CLOCK)
                 imgui.SameLine(0, 6)
                 local cdText = secsLeft <= 0 and u8 "Автосбор начинается!"
@@ -3588,6 +3756,9 @@ imgui.OnFrame(
                 imgui.SameLine(0, 6)
                 imgui.TextColored(imgui.ImVec4(0.6, 0.6, 0.6, _nAlpha),
                     u8(string.format("%d сборов в день", cfg.collectTimesPerDay)))
+                imgui.Spacing()
+                imgui.TextColored(imgui.ImVec4(0.45, 0.45, 0.45, _nAlpha * 0.8),
+                    isChatOpen and u8 "ПКМ — отменить автосбор" or u8 "T + ПКМ — отменить автосбор")
             elseif mode == 'collecting' then
                 imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.ROTATE)
                 imgui.SameLine(0, 6)
@@ -3605,7 +3776,11 @@ imgui.OnFrame(
                     u8(string.format("%d / %d домов", data.progressCurrent,
                         data.progressTotal > 0 and data.progressTotal or 0)))
                 imgui.PopStyleColor(2)
+                imgui.Spacing()
+                imgui.TextColored(imgui.ImVec4(0.45, 0.45, 0.45, _nAlpha * 0.8),
+                    isChatOpen and u8 "ПКМ — отменить автосбор" or u8 "T + ПКМ — отменить автосбор")
             end
+
             imgui.Spacing()
             imgui.End()
         end
@@ -3613,7 +3788,6 @@ imgui.OnFrame(
         imgui.PopStyleColor(5)
     end
 )
-
 -- окно настроек
 imgui.OnFrame(
     function() return data.showSettingsWindow[0] end,
@@ -3708,7 +3882,7 @@ imgui.OnFrame(
                     if imgui.Checkbox(u8 "Проверять обновления при запуске", imcfg.checkForUpdates) then
                         cfg.checkForUpdates = imcfg.checkForUpdates[0]; save()
                     end
-                    imgui.Hint("Автоматически проверять наличие новых версий скрипта при запуске.")
+                    imgui.Hint("Автоматически проверять наличие новых версий скрипта при запуске.\n")
 
                     if updateState.hasUpdate then
                         imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.85, 0.2, 1.0))
@@ -3867,9 +4041,9 @@ imgui.OnFrame(
                     -- Вкладка 2: Автосбор + Уведомления
                 elseif data.settingsTab == 2 then
                     if not cfg.useDialogMode and not data.isRodina then
-                        imgui.TextColoredRGB("{FF6B6B}Чит-функции")
+                        imgui.TextColoredRGB("{FF6B6B}Автоматизированные действия")
 
-                        if imgui.Checkbox(u8 "Включить чит-функции", imcfg.cheatModeEnabled) then
+                        if imgui.Checkbox(u8 "Включить автоматизированные действия", imcfg.cheatModeEnabled) then
                             cfg.cheatModeEnabled = imcfg.cheatModeEnabled[0]
                             if not cfg.cheatModeEnabled then
                                 cfg.autoCollectEnabled = false; imcfg.autoCollectEnabled[0] = false
@@ -3881,12 +4055,12 @@ imgui.OnFrame(
                         end
                         imgui.Hint(
                             "{FF6B6B} ВНИМАНИЕ!\n" ..
-                            "Используйте на свой страх и риск!\n\n" ..
-                            "Эти функции автоматизируют действия и могут\n" ..
-                            "привести к нежелательным последствиям.\n" ..
+                            "Эти функции могут быть запрещены на вашем сервере!\n" ..
+                            "Перед использованием уточните у администрации,\n" ..
+                            "не нарушает ли это правила сервера.\n\n" ..
+                            "Используйте на свой страх и риск.\n" ..
                             "Автор не несёт ответственности за блокировки\n" ..
-                            "или иные проблемы, связанные с их использованием.\n\n" ..
-                            "{FFE133}Рекомендуется присутствовать у компьютера.")
+                            "или иные проблемы, связанные с их использованием.\n\n")
 
                         if cfg.cheatModeEnabled then
                             imgui.Spacing()
@@ -4087,19 +4261,48 @@ imgui.OnFrame(
                                     "{808080}Вызывает /flashminer и обновляет данные.")
 
                                 if cfg.autoRefreshEnabled then
+                                    local refreshChildH = 100
+                                    if cfg.refreshPostponeOnDialog then refreshChildH = 140 end
+
                                     imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##refreshSub", imgui.ImVec2(0, 65), true,
+                                    imgui.BeginChild("##refreshSub", imgui.ImVec2(0, refreshChildH), true,
                                         imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
                                     imgui.PushItemWidth(-1)
                                     if imgui.SliderInt("##refreshInt", imcfg.autoRefreshInterval, 10, 120,
                                             u8(string.format("каждые %d мин.", imcfg.autoRefreshInterval[0]))) then
                                         cfg.autoRefreshInterval = imcfg.autoRefreshInterval[0]; save()
                                     end
-                                    imgui.PopItemWidth()
+
                                     local refLeft = (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) - os.time()
                                     imgui.TextColoredRGB(refLeft > 0
                                         and string.format("{808080}До обновления: {FFFFFF}%s", formatTimeLeft(refLeft))
                                         or "{BEF781}При следующей проверке!")
+
+                                    imgui.PopItemWidth()
+
+                                    if imgui.Checkbox(u8 "Не прерывать открытый диалог",
+                                            imcfg.refreshPostponeOnDialog) then
+                                        cfg.refreshPostponeOnDialog = imcfg.refreshPostponeOnDialog[0]; save()
+                                    end
+                                    imgui.Hint(
+                                        "Если у вас открыт любой диалог в момент обновления —\n" ..
+                                        "отложить обновление, чтобы не сбить ваше взаимодействие.\n")
+
+                                    if cfg.refreshPostponeOnDialog then
+                                        imgui.PushItemWidth(-1)
+                                        if imgui.SliderInt("##refreshPostpone", imcfg.refreshPostponeMinutes, 1, 5,
+                                                u8(string.format("отложить на %d мин.", imcfg.refreshPostponeMinutes[0]))) then
+                                            cfg.refreshPostponeMinutes = imcfg.refreshPostponeMinutes[0]; save()
+                                        end
+                                        imgui.PopItemWidth()
+                                    end
+
+                                    if data.refreshPostponedUntil and data.refreshPostponedUntil > os.time() then
+                                        imgui.TextColoredRGB(string.format(
+                                            "{FFE133}Отложено: {FFFFFF}%s",
+                                            formatTimeLeft(data.refreshPostponedUntil - os.time())))
+                                    end
+
                                     imgui.EndChild()
                                     imgui.PopStyleColor()
                                 end
@@ -4267,7 +4470,7 @@ imgui.OnFrame(
 
                                 if cfg.reminderEnabled and not autoCollectActive then
                                     imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##remSub", imgui.ImVec2(0, 100), true,
+                                    imgui.BeginChild("##remSub", imgui.ImVec2(0, 140), true,
                                         imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
                                     local estBtc, hasData = estimateTotalBTC()
                                     if hasData then
@@ -4286,6 +4489,11 @@ imgui.OnFrame(
                                             u8(string.format("каждые %d мин.", imcfg.reminderInterval[0]))) then
                                         cfg.reminderInterval = imcfg.reminderInterval[0]; save()
                                     end
+                                    if imgui.SliderInt("##nDur", imcfg.notifyShowDuration, 3, 30,
+                                            u8(string.format("показывать %d сек.", imcfg.notifyShowDuration[0]))) then
+                                        cfg.notifyShowDuration = imcfg.notifyShowDuration[0]; save()
+                                    end
+                                    imgui.Hint("Как долго показывать всплывающее\nуведомление.")
                                     imgui.PopItemWidth()
                                     imgui.EndChild()
                                     imgui.PopStyleColor()
@@ -4308,13 +4516,11 @@ imgui.OnFrame(
                                     cfg.notifyBeforeSec = imcfg.notifyBeforeSec[0]; save()
                                 end
                                 imgui.Hint("За сколько секунд до автосбора показывать\nокно с обратным отсчётом.")
-                                if imgui.SliderInt("##nDur", imcfg.notifyShowDuration, 3, 30,
-                                        u8(string.format("показывать %d сек.", imcfg.notifyShowDuration[0]))) then
-                                    cfg.notifyShowDuration = imcfg.notifyShowDuration[0]; save()
-                                end
-                                imgui.Hint("Как долго показывать всплывающее\nуведомление (напоминание о BTC).")
+
                                 imgui.PopItemWidth()
                                 imgui.Spacing()
+                                imgui.Separator()
+                                imgui.TextColoredRGB("{87CEFA}Предпросмотр")
                                 if imgui.Selectable(u8 "Предпросмотр окна", false) then
                                     data.notifyWindow.btcAmount  = 150
                                     data.notifyWindow.mode       = 'reminder'
@@ -4322,7 +4528,7 @@ imgui.OnFrame(
                                     data.notifyWindow.show[0]    = true
                                 end
                                 imgui.Hint(
-                                    "Показать пример окна уведомления.\nПеретащите его мышью — позиция\nавтоматически сохранится.")
+                                    "Показать пример окна уведомления.\nПеретащите его мышью — позиция\nавтоматически сохранится.\nСпустя несколько секунд окно пропадёт.")
                             end
                         end
                     else
@@ -4334,6 +4540,50 @@ imgui.OnFrame(
                         cfg.pauseOnPayday = imcfg.pauseOnPayday[0]; save()
                     end
                     imgui.Hint("Останавливать операции во время PayDay.\nМожно пропустить кнопкой в окне прогресса.")
+
+                    imgui.Spacing()
+                    imgui.Separator()
+                    imgui.Spacing()
+
+                    imgui.TextColoredRGB("{87CEFA}Ожидание подключения:")
+
+                    if imgui.Checkbox(u8 "Ждать подключения к серверу", imcfg.waitForConnection) then
+                        cfg.waitForConnection = imcfg.waitForConnection[0]; save()
+                    end
+                    imgui.Hint(
+                        "Если вы не подключены к серверу — все автодействия\n" ..
+                        "приостанавливаются до момента подключения.\n\n" ..
+                        "После подключения ждём указанное ниже время,\n" ..
+                        "прежде чем возобновить автодействия\n" ..
+                        "(нужно чтобы успеть войти в игру).")
+
+                    if cfg.waitForConnection then
+                        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                        imgui.BeginChild("##connSub", imgui.ImVec2(0, 70), true,
+                            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                        imgui.PushItemWidth(-1)
+                        if imgui.SliderInt("##delayAfterConnect", imcfg.delayAfterConnectMin, 5, 20,
+                                u8(string.format("задержка %d мин. после подключения",
+                                    imcfg.delayAfterConnectMin[0]))) then
+                            cfg.delayAfterConnectMin = imcfg.delayAfterConnectMin[0]; save()
+                        end
+                        imgui.PopItemWidth()
+
+                        if data.connectionState.connected then
+                            local waitLeft = data.connectionState.readyAfterConnect - os.time()
+                            if waitLeft > 0 then
+                                imgui.TextColoredRGB(string.format(
+                                    "{FFE133}Активация через: {FFFFFF}%s", formatTimeLeft(waitLeft)))
+                            else
+                                imgui.TextColoredRGB("{BEF781}Статус: подключён")
+                            end
+                        else
+                            imgui.TextColoredRGB("{FF6B6B}Статус: не в игре")
+                        end
+
+                        imgui.EndChild()
+                        imgui.PopStyleColor()
+                    end
 
                     imgui.Spacing()
                     imgui.Separator()
@@ -4512,6 +4762,16 @@ imgui.OnFrame(
                         imgui.TextColoredRGB(string.format("{808080}notifyMode: {FFFFFF}%s",
                             data.notifyWindow.mode ~= '' and data.notifyWindow.mode or "нет"))
                         imgui.TextColoredRGB(string.format("{808080}silent: {FFFFFF}%s", tostring(data.silentWindowOpen)))
+                        imgui.TextColoredRGB(string.format("{808080}connected: {FFFFFF}%s",
+                            tostring(data.connectionState.connected)))
+                        if data.connectionState.readyAfterConnect > os.time() then
+                            imgui.TextColoredRGB(string.format("{808080}ready in: {FFE133}%s",
+                                formatTimeLeft(data.connectionState.readyAfterConnect - os.time())))
+                        end
+                        if data.refreshPostponedUntil > os.time() then
+                            imgui.TextColoredRGB(string.format("{808080}refresh postponed: {FFE133}%s",
+                                formatTimeLeft(data.refreshPostponedUntil - os.time())))
+                        end
                         imgui.TextColoredRGB(string.format("{808080}scanDone: {FFFFFF}%s",
                             tostring(data.initialScanCompleted)))
                         do
@@ -4945,7 +5205,7 @@ imgui.OnFrame(
                     imgui.Spacing()
 
                     imgui.TextColoredRGB("{87CEFA}Видеокарты:")
-                    StatRow(fa.POWER_OFF, "Включено карт:", tostring(stats.switchOn),"{BEF781}",
+                    StatRow(fa.POWER_OFF, "Включено карт:", tostring(stats.switchOn), "{BEF781}",
                         "Суммарное количество включённых видеокарт за всё время")
                     StatRow(fa.PLUG, "Выключено карт:", tostring(stats.switchOff), "{F78181}",
                         "Суммарное количество выключённых видеокарт за всё время")
@@ -6718,7 +6978,6 @@ function __i__progressPanel()
         if imgui.Button(fa.STOP .. u8 " Остановить", imgui.ImVec2(95, 40)) then
             data.stopAction = true
             data.skipPayday = true
-            utils.addChat("{FFE133}Остановка операции...")
         end
         imgui.PopStyleColor(3)
 
@@ -6738,7 +6997,6 @@ function __i__progressPanel()
         imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.6, 0.1, 0.1, 1.0))
         if imgui.Button(fa.STOP .. u8 " Остановить", imgui.ImVec2(200, 40)) then
             data.stopAction = true
-            utils.addChat("{FFE133}Остановка операции...")
         end
         imgui.PopStyleColor(3)
     end
