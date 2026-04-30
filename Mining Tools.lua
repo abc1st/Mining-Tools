@@ -1,6 +1,6 @@
 script_name('Mining Tools')
 script_author('JustFedot -- Modified by kernelich')
-script_version('2.4.7')
+script_version('2.4.8')
 script_version_number(2)
 script_description('Скрипт для упрощения майнинга на сервере.')
 
@@ -349,6 +349,7 @@ local data = {
         btcAmount       = 0,
         countdownTarget = 0,
         autoHideAt      = 0,
+        isPreview       = false,
     },
     showLogsWindow         = imgui.new.bool(false),
     logsTab                = imgui.new.int(0),
@@ -364,6 +365,7 @@ local data = {
     cheatSubTab            = 0,
     debugSubTab            = 0,
     stopBySystem           = false,
+    coolantOutForSession   = false,
     pendingCollectAt       = 0,
     pendingCollectLocked   = false,
     logsPeriodFilter       = 0,
@@ -541,7 +543,7 @@ function downloadAndApplyUpdate()
         if resp.status_code == 200 or resp.status_code == 201 then
             local oldPath = thisScript().path
             local dir = oldPath:match("(.+)[/\\]")
-            local newPath = dir .. "\\Mining Tools.lua"
+            local newPath = dir .. "\\" .. thisScript().name .. ".lua"
             local sameFile = (oldPath:lower() == newPath:lower())
 
             local file = io.open(newPath, "wb")
@@ -993,14 +995,8 @@ local houseStatusHelper = {
 
     buildTooltip = function(self, status, house, isNoBasement)
         local lines = {}
-
-        if status and status.lastCheck and status.lastCheck > 0 then
-            table.insert(lines, "Проверено: " .. os.date('%d.%m.%Y в %H:%M', status.lastCheck))
-            table.insert(lines, "--------------------")
-        end
-
         if isNoBasement then
-            table.insert(lines, 1, "В доме нет подвала (из кэша)")
+            table.insert(lines, 1, "В доме нет подвала")
             table.insert(lines, 2, "--------------------")
         elseif not (status and status.lastCheck > 0) then
             lines = { "Статус неизвестен (дом не проверялся)" }
@@ -1118,6 +1114,7 @@ local collectTriggers = {
                 data.notifyWindow.btcAmount  = estBTC
                 data.notifyWindow.mode       = 'reminder'
                 data.notifyWindow.autoHideAt = now + cfg.notifyShowDuration
+                data.notifyWindow.isPreview  = false
                 data.notifyWindow.show[0]    = true
             end
         end,
@@ -1285,6 +1282,7 @@ local function CollectNow(st, now)
     if cfg.notifyAutoCollectEnabled then
         data.notifyWindow.mode       = 'collecting'
         data.notifyWindow.autoHideAt = 0
+        data.notifyWindow.isPreview  = false
         data.notifyWindow.show[0]    = true
     end
     runSilentCollect(true)
@@ -1311,6 +1309,7 @@ local function tickTrigger(trig, now)
             data.notifyWindow.countdownTarget = trig.getCountdownAt(secsLeft)
             data.notifyWindow.mode            = 'countdown'
             data.notifyWindow.autoHideAt      = 0
+            data.notifyWindow.isPreview       = false
             data.notifyWindow.show[0]         = true
         end
         if secsLeft <= 0 and data.notifyWindow.mode == 'countdown'
@@ -1355,6 +1354,7 @@ local function tickTrigger(trig, now)
                 data.notifyWindow.countdownTarget = data.pendingCollectAt
                 data.notifyWindow.mode            = 'countdown'
                 data.notifyWindow.autoHideAt      = 0
+                data.notifyWindow.isPreview       = false
                 data.notifyWindow.show[0]         = true
             end
         end
@@ -1443,6 +1443,7 @@ function runTaskAndReopenDialog(taskFunction, ...)
         while data.working do wait(50) end
         wait(200)
         if sampIsDialogActive() then sampCloseCurrentDialogWithButton(0) end
+        if data.hasFlashminer == false then return end
         sampSendChat("/flashminer")
     end)
 end
@@ -1653,9 +1654,11 @@ function main()
     lua_thread.create(function()
         while true do
             wait(300)
+
             if data.pendingCoolant and not data.working then
                 data.pendingCoolant = false
                 wait(200)
+
                 if not data.working then
                     local needsCoolant = false
                     for _, card in ipairs(data.dialogData.videocards) do
@@ -1665,38 +1668,48 @@ function main()
                         end
                     end
 
-                    local willRefill = cfg.fixCoolantEnabled and needsCoolant
+                    local willRefill = cfg.fixCoolantEnabled
+                        and needsCoolant
+                        and not data.coolantOutForSession
+                    local fillAttempted = false
+                    local fillRanOutOfLiquid = false
 
-                    local needsEnable = false
-                    for _, card in ipairs(data.dialogData.videocards) do
-                        if not card.working and (card.coolant > 0 or willRefill) then
-                            needsEnable = true
-                            break
-                        end
-                    end
-
-                    local didFillCoolant = false
                     if willRefill then
                         data.coolantDoneForDialog = true
+                        fillAttempted = true
+
                         local coolantTask = buildTaskTable('coolant')
                         coolantTask:coolant()
+
                         while data.working do wait(200) end
+                        fillRanOutOfLiquid = data.stopBySystem == true
 
                         if not data.stopAction then
-                            didFillCoolant = true
                             for _, card in ipairs(data.dialogData.videocards) do
                                 if card.coolant < cfg.useCoolantPercent then
                                     card.coolant = 100
                                 end
                             end
                         end
+                        if fillRanOutOfLiquid then
+                            data.coolantOutForSession = true
+                        end
+                        data.stopAction = false
+                        data.stopBySystem = false
+
                         wait(300)
                     end
-
+                    local hasEnableable = false
+                    for _, card in ipairs(data.dialogData.videocards) do
+                        if not card.working and card.coolant > 0 then
+                            hasEnableable = true
+                            break
+                        end
+                    end
                     local shouldEnableCards = false
-                    if cfg.autoEnableCardsOnOpen and needsEnable then
+                    if cfg.autoEnableCardsOnOpen and hasEnableable then
                         shouldEnableCards = true
-                    elseif cfg.autoEnableCards and didFillCoolant and needsEnable then
+                    elseif cfg.autoEnableCards and fillAttempted and hasEnableable then
                         shouldEnableCards = true
                     end
 
@@ -1886,8 +1899,12 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
     end
 
     local isMassAction = data.working and massActionTypes[data.taskTypeNow] and not cfg.useDialogMode == true
-
-    if title:find("Выбор дома") then
+    if title:find("Выбор дома") and text:find("домов для") then
+        data.hasFlashminer = false
+        data.stopAction = true
+        return false
+    end
+    if title:find("Выбор дома") and not text:find("домов для") then
         if text:match("циклов %(") then
             data.hasFlashminer = true
             data.isFlashminer = true
@@ -2099,6 +2116,11 @@ end
 function sampev.onDialogClose(dialogId, button, listitem, input)
     if dialogId == data.dFlashminerId then
         data.showHouseControlWindow[0] = false
+    end
+    if dialogId == dialogIdTable.videoCardSt
+        or dialogId == dialogIdTable.videoCardDialogId
+        or dialogId == dialogIdTable.houseFlashMinerDialogId then
+        data.coolantOutForSession = false
     end
 end
 
@@ -2686,7 +2708,7 @@ function buildTaskTable(taskType, ...)
                     end
                 end
                 if data.stopAction and not data.stopBySystem then
-                    utils.addChat("{FFE133}Операция остановлена пользователем.")
+                    utils.addChat("{FFE133}Остановлено пользователем.")
                 end
                 data.stopBySystem = false
 
@@ -2827,7 +2849,6 @@ function buildTaskTable(taskType, ...)
                 end
             end
             data.withdraw = { asc = 0, btc = 0 }
-            utils.addChat("Начинаю сбор криптовалюты со всех домов...")
 
             createProtectedTask(function(sendResponse)
                 local actualHousesToProcess = {}
@@ -2885,7 +2906,6 @@ function buildTaskTable(taskType, ...)
                 end
 
                 wait(250)
-                utils.addChat("{BEF781}Обход всех домов завершен.")
                 local earnings, hasEarnings = formatEarnings(
                     data.withdraw.btc, data.withdraw.asc,
                     not data.isRodina, "{ffffff} и "
@@ -2894,8 +2914,6 @@ function buildTaskTable(taskType, ...)
                     utils.addChat("Всего собрано: " .. earnings .. "{ffffff}.")
                     addLogEntry('collect',
                         { btc = data.withdraw.btc, asc = data.withdraw.asc, houses = housesCollectedFrom })
-                else
-                    utils.addChat("Не было собрано ни одной целой монеты.")
                 end
             end)
         end
@@ -2914,9 +2932,6 @@ function buildTaskTable(taskType, ...)
                     table.insert(housesToProcess, house)
                 end
             end
-
-            local actionText = enable and "Включаю" or "Выключаю"
-            utils.addChat(actionText .. " видеокарты во всех домах...")
 
             createProtectedTask(function(sendResponse, enable_arg)
                 local actualHousesToProcess = {}
@@ -2997,7 +3012,6 @@ function buildTaskTable(taskType, ...)
                     end
                 end
 
-                utils.addChat("{BEF781}Переключение видеокарт завершено.")
                 if totalSwitched > 0 then
                     addLogEntry('switch', {
                         enabled = enable,
@@ -3247,14 +3261,6 @@ function buildTaskTable(taskType, ...)
                         houses = #housesToProcess
                     })
                 end
-                if #report > 0 then
-                    utils.addChat("Итоги операции:")
-                    for _, line in ipairs(report) do
-                        sampAddChatMessage('{ffa500}' .. thisScript().name .. '{ffffff}: ' .. line, -1)
-                    end
-                else
-                    utils.addChat("Никаких действий не потребовалось. Все системы в норме.")
-                end
             end)
         end
     elseif taskType == 'autoPayTaxes' then
@@ -3286,8 +3292,6 @@ function buildTaskTable(taskType, ...)
                         "{BEF781}Налоги оплачены: {FFD700}$%s",
                         utils.formatNumber(data.capturedTaxAmount)))
                     addLogEntry('tax', { amount = data.capturedTaxAmount })
-                else
-                    utils.addChat("{BEF781}Команда оплаты налогов отправлена.")
                 end
             end)
         end
@@ -3311,9 +3315,6 @@ function buildTaskTable(taskType, ...)
                 utils.debugChat("[CHEAT] Пополнение не требуется.")
                 return false
             end
-
-            utils.addChat(string.format(
-                "Автопополнение: %d домов требуют пополнения...", #housesToTopUp))
 
             createProtectedTask(function(sendResponse)
                 local totalTopUp = 0
@@ -3389,8 +3390,6 @@ function buildTaskTable(taskType, ...)
                         "{BEF781}Баланс пополнен: {FFD700}$%s {808080}(%d домов)",
                         utils.formatNumber(totalTopUp), housesCount))
                     addLogEntry('topup', { topup = totalTopUp, houses = housesCount })
-                else
-                    utils.addChat("{808080}Пополнение не потребовалось.")
                 end
             end)
         end
@@ -3405,9 +3404,9 @@ function runSilentRefresh()
         wait(300)
         while data.working do wait(200) end
     end)
+    cfg.lastAutoRefreshTime = os.time()
+    save()
     if result then
-        cfg.lastAutoRefreshTime = os.time()
-        save()
         utils.debugChat("[REFRESH] Фоновое обновление статусов завершено.")
     end
     return result
@@ -3415,6 +3414,7 @@ end
 
 function withSilentFlashminer(callback)
     if data.working then return false end
+    if data.hasFlashminer == false then return false end
     data.silentWindowOpen = true
     data.dialogData.flashminer = {}
     sampSendChat("/flashminer")
@@ -3422,8 +3422,13 @@ function withSilentFlashminer(callback)
     local t = 0
     while #data.dialogData.flashminer == 0 and t < 5000 do
         wait(200); t = t + 200
+        if data.hasFlashminer == false then
+            data.silentWindowOpen = false
+            return false
+        end
     end
     if #data.dialogData.flashminer == 0 then
+        data.hasFlashminer = false
         data.silentWindowOpen = false
         return false
     end
@@ -3642,6 +3647,7 @@ imgui.OnFrame(
         if data.notifyWindow.autoHideAt > 0 and os.time() >= data.notifyWindow.autoHideAt then
             data.notifyWindow.show[0] = false
             data.notifyWindow.autoHideAt = 0
+            data.notifyWindow.isPreview = false
         end
 
         local now           = os.clock()
@@ -3654,7 +3660,7 @@ imgui.OnFrame(
         applyStyle()
         local sw, sh       = getScreenResolution()
 
-        local isPreview    = data.notifyWindow.autoHideAt > 0
+        local isPreview    = data.notifyWindow.isPreview
         local isActionMode = data.notifyWindow.mode == 'countdown'
             or data.notifyWindow.mode == 'collecting'
         local isChatOpen   = sampIsChatInputActive()
@@ -4525,6 +4531,7 @@ imgui.OnFrame(
                                     data.notifyWindow.btcAmount  = 150
                                     data.notifyWindow.mode       = 'reminder'
                                     data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
+                                    data.notifyWindow.isPreview  = true
                                     data.notifyWindow.show[0]    = true
                                 end
                                 imgui.Hint(
@@ -4717,6 +4724,7 @@ imgui.OnFrame(
                         if imgui.Selectable(u8 "reminder", false) then
                             data.notifyWindow.btcAmount = 250; data.notifyWindow.mode = 'reminder'
                             data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
+                            data.notifyWindow.isPreview = true
                             data.notifyWindow.show[0] = true
                         end
                         if imgui.Selectable(u8 "countdown (30с)", false) then
@@ -5530,6 +5538,7 @@ function __i__bottomPanel()
 
     if ButtonWithHint(u8 "Снять криптовалюту", withdrawHint,
             canWithdraw and not data.working, imgui.ImVec2(-1, elementHeight)) then
+        data.coolantOutForSession = false
         local task = buildTaskTable('takeCrypto')
         task:takeCrypto()
     end
