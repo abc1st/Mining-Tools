@@ -543,7 +543,7 @@ function downloadAndApplyUpdate()
         if resp.status_code == 200 or resp.status_code == 201 then
             local oldPath = thisScript().path
             local dir = oldPath:match("(.+)[/\\]")
-            local newPath = dir .. "\\" .. thisScript().name .. ".lua"
+            local newPath = dir .. "\\Mining Tools.lua"
             local sameFile = (oldPath:lower() == newPath:lower())
 
             local file = io.open(newPath, "wb")
