@@ -1,6 +1,6 @@
 script_name('Mining Tools')
 script_author('JustFedot -- Modified by kernelich')
-script_version('2.5.0')
+script_version('2.5.1')
 script_version_number(2)
 script_description('Скрипт для упрощения майнинга на сервере.')
 
@@ -69,7 +69,7 @@ local dialogIdTable          = {
         phoneBankMenuId = 6565,          -- ID главного меню банка в телефоне
         payAllTaxesDialogId = 15252,     -- ID диалога подтверждения оплаты всех налогов
         houseListBankId = 7238,          -- ID диалога выбора дома для пополнения (тот же что и houseDialogId)
-        topUpBalanceDialogId = 27035,    -- ID диалога ввода суммы пополнения
+        topUpBalanceDialogId = 27036,    -- ID диалога ввода суммы пополнения
 
     },
     rodina = {
@@ -432,6 +432,7 @@ local data = {
     notifyWindow           = {
         show            = imgui.new.bool(false),
         mode            = '',
+        source          = '',
         btcAmount       = 0,
         countdownTarget = 0,
         autoHideAt      = 0,
@@ -1185,17 +1186,29 @@ local flashminerTool = (function()
 
         local function parseAmount(str)
             if not str then return 0 end
-            local kk, k = str:match(":KK:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
-            kk, k = str:match(":KK:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
-            if kk and k then
-                return math.floor(tonumber((kk:gsub('%.', ''))) * 1e6 + tonumber((k:gsub('%.', ''))))
+            str = str:match("^%s*(.-)%s*$")
+
+            local cash = str:match(":CASH:([%d%.]+)")
+            if cash then
+                return tonumber((cash:gsub("%.", ""))) or 0
             end
+
+            local kk, k = str:match(":KK:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
+            if kk and k then
+                return math.floor(tonumber((kk:gsub("%.", ""))) * 1e6 + tonumber((k:gsub("%.", ""))))
+            end
+
             kk = str:match(":KK:%s*([%d%.]+)")
-            if kk then return math.floor(tonumber((kk:gsub('%.', ''))) * 1e6) end
+            if kk then
+                return math.floor(tonumber((kk:gsub("%.", ""))) * 1e6)
+            end
+
             k = str:match(":K:%s*([%d%.]+)")
-            if k then return math.floor(tonumber((k:gsub('%.', '')))) end
-            local clean = str:gsub("[%$%.%s]", "")
-            return tonumber(clean) or 0
+            if k then
+                return tonumber((k:gsub("%.", ""))) or 0
+            end
+
+            return tonumber((str:gsub("[%.%s]", ""))) or 0
         end
 
         for line in text:gmatch("[^\r\n]+") do
@@ -2807,6 +2820,7 @@ local collectTool = (function()
                 st.countdownNotified              = true
                 data.notifyWindow.countdownTarget = trig.getCountdownAt(secsLeft)
                 data.notifyWindow.mode            = 'countdown'
+                data.notifyWindow.source          = trig.name
                 data.notifyWindow.autoHideAt      = 0
                 data.notifyWindow.isPreview       = false
                 data.notifyWindow.show[0]         = true
@@ -2852,6 +2866,7 @@ local collectTool = (function()
                     st.pendingNotified                = true
                     data.notifyWindow.countdownTarget = data.pendingCollectAt
                     data.notifyWindow.mode            = 'countdown'
+                    data.notifyWindow.source          = trig.name
                     data.notifyWindow.autoHideAt      = 0
                     data.notifyWindow.isPreview       = false
                     data.notifyWindow.show[0]         = true
@@ -3208,6 +3223,13 @@ function main()
 
     if cfg.checkForUpdates then
         checkForUpdates()
+    end
+    if type(cfg.cardSnapshots) == 'table' then
+        for k, snap in pairs(cfg.cardSnapshots) do
+            if type(snap) == 'table' and snap.isFake then
+                cfg.cardSnapshots[k] = nil
+            end
+        end
     end
 
     sampRegisterChatCommand('mnt', function()
@@ -4844,7 +4866,7 @@ function buildTaskTable(taskType, ...)
                     end
                     wait(100)
                 end
-                sampSendChat("/flashminer")
+                --sampSendChat("/flashminer")
                 wait(300)
                 local report = {}
                 local earnings, hasEarnings = formatEarnings(summary.btc_collected, summary.asc_collected,
@@ -5366,8 +5388,13 @@ imgui.OnFrame(
                 imgui.Spacing()
                 imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.ROTATE)
                 imgui.SameLine(0, 6)
-                imgui.TextColored(imgui.ImVec4(0.6, 0.6, 0.6, _nAlpha),
-                    u8(string.format("%d сборов в день", cfg.collectTimesPerDay)))
+                local subText
+                if data.notifyWindow.source == 'smart' then
+                    subText = u8(string.format("Цель: %d BTC", cfg.smartCollectTarget))
+                else
+                    subText = u8(string.format("%d сборов в день", cfg.collectTimesPerDay))
+                end
+                imgui.TextColored(imgui.ImVec4(0.6, 0.6, 0.6, _nAlpha), subText)
                 imgui.Spacing()
                 imgui.TextColored(imgui.ImVec4(0.45, 0.45, 0.45, _nAlpha * 0.8),
                     isChatOpen and u8 "ПКМ — отменить автосбор" or u8 "T + ПКМ — отменить автосбор")
@@ -5967,28 +5994,30 @@ imgui.OnFrame(
                     imgui.Separator()
                     imgui.Spacing()
 
-                    if imgui.Checkbox(u8 "Проверять обновления при запуске", imcfg.checkForUpdates) then
-                        cfg.checkForUpdates = imcfg.checkForUpdates[0]; save()
-                    end
-                    imgui.Hint("Автоматически проверять наличие новых версий скрипта при запуске.\n")
-
-                    if updateState.hasUpdate then
-                        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.85, 0.2, 1.0))
-                        if imgui.Selectable(fa.ARROW_UP_FROM_BRACKET .. u8(string.format("  Установить обновление %s", updateState.latestVersion or "")), false) then
-                            updateState.showPopup[0]   = true
-                            data.showSettingsWindow[0] = false
+                    if UPDATE_CHECK_URL ~= nil then
+                        if imgui.Checkbox(u8 "Проверять обновления при запуске", imcfg.checkForUpdates) then
+                            cfg.checkForUpdates = imcfg.checkForUpdates[0]; save()
                         end
-                        imgui.PopStyleColor()
-                        imgui.Hint(
-                            "{FFE133}Доступна новая версия скрипта!\n\n" ..
-                            "{FFFFFF}Нажмите чтобы открыть окно обновления.\n" ..
-                            "{808080}Текущая: " .. script.this.version .. "\n" ..
-                            "{808080}Новая: " .. (updateState.latestVersion or "?"))
-                    end
+                        imgui.Hint("Автоматически проверять наличие новых версий скрипта при запуске.\n")
 
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
+                        if updateState.hasUpdate then
+                            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.85, 0.2, 1.0))
+                            if imgui.Selectable(fa.ARROW_UP_FROM_BRACKET .. u8(string.format("  Установить обновление %s", updateState.latestVersion or "")), false) then
+                                updateState.showPopup[0]   = true
+                                data.showSettingsWindow[0] = false
+                            end
+                            imgui.PopStyleColor()
+                            imgui.Hint(
+                                "{FFE133}Доступна новая версия скрипта!\n\n" ..
+                                "{FFFFFF}Нажмите чтобы открыть окно обновления.\n" ..
+                                "{808080}Текущая: " .. script.this.version .. "\n" ..
+                                "{808080}Новая: " .. (updateState.latestVersion or "?"))
+                        end
+
+                        imgui.Spacing()
+                        imgui.Separator()
+                        imgui.Spacing()
+                    end
 
                     if imgui.Selectable(u8 "Просмотр логов", false) then
                         data.showLogsWindow[0] = true
@@ -6108,7 +6137,7 @@ imgui.OnFrame(
                         imgui.PopItemWidth()
                         imgui.Hint(
                             "0 = собирать всегда (от 1 BTC).\nПри сборе пропускать дома где меньше N BTC.\n" ..
-                            "Учтите, что если на ферме будет например 5 карт,\n"..
+                            "Учтите, что если на ферме будет например 5 карт,\n" ..
                             "а значение стоит на 180, то этот дом никогда не будет собираться.")
 
                         imgui.Spacing()
@@ -7003,7 +7032,7 @@ imgui.OnFrame(
                             imgui.TextColoredRGB("{808080}Нет домов.")
                         end
                     elseif data.debugSubTab == 2 then
-                        imgui.TextColoredRGB("{F78181}Аварийные действия:")
+                        imgui.TextColoredRGB("Действия:")
                         if imgui.Selectable(u8 "Сбросить working + stopAction", false) then
                             taskState.setWorking(false); data.stopAction = false; data.taskTypeNow = nil
                             data.isWaitingPayday = false; data.skipPayday = false
@@ -7066,19 +7095,19 @@ imgui.OnFrame(
                             "При следующем открытии /flashminer сработает скан подвала.")
                         if imgui.Selectable(u8 "Лог видеокарт", false) then
                             for i, card in ipairs(data.dialogData.videocards) do
-                                utils.addChat(string.format("{808080}[%d] lvl=%d %s work=%s btc=%.2f cool=%.1f%%",
+                                utils.debugChat(string.format("{808080}[%d] lvl=%d %s work=%s btc=%.2f cool=%.1f%%",
                                     i, card.level, card.card_type or "?", tostring(card.working),
                                     card.btc_full, card.coolant))
                             end
                         end
                         if imgui.Selectable(u8 "Лог исключённых", false) then
                             for houseNum in pairs(cfg.excludedHouses) do
-                                utils.addChat(string.format("{808080}  №%s", houseNum))
+                                utils.debugChat(string.format("{808080}  №%s", houseNum))
                             end
                         end
                         if imgui.Selectable(u8 "Лог без подвала", false) then
                             for houseNum in pairs(cfg.housesWithoutBasement) do
-                                utils.addChat(string.format("{808080}  №%s", houseNum))
+                                utils.debugChat(string.format("{808080}  №%s", houseNum))
                             end
                         end
 
@@ -7121,6 +7150,90 @@ imgui.OnFrame(
                         end
                         if imgui.Selectable(u8 "Принудительно остановить заточку", false) then
                             improveTool.stop("DEBUG")
+                        end
+                        imgui.Spacing()
+                        imgui.Separator()
+                        imgui.Spacing()
+
+                        imgui.TextColoredRGB("{87CEFA}Тестовые дома:")
+                        if imgui.Selectable(u8 "Добавить тестовый дом", false) then
+                            local nextNum = 9001
+                            for _, h in ipairs(data.dialogData.flashminer) do
+                                if h.house_number >= nextNum then
+                                    nextNum = h.house_number + 1
+                                end
+                            end
+                            local cities = { "З", "А", "Л", "У", "П", "Автосбор" }
+                            local city   = cities[math.random(#cities)]
+                            local maxB   = math.random(20, 100) * 1000000
+                            local bal    = math.random(0, maxB)
+                            local hasAsc = not data.isRodina
+
+                            table.insert(data.dialogData.flashminer, {
+                                index        = #data.dialogData.flashminer + 1,
+                                name         = "Дом №" .. nextNum,
+                                house_number = nextNum,
+                                city         = city,
+                                tax          = math.random(1, 100) * 1000,
+                                cycles       = math.random(0, 5),
+                                balance      = bal,
+                                max_balance  = maxB,
+                                raw_line     = "FAKE",
+                                isFake       = true,
+                            })
+
+                            local fakeCoolant = math.random(20, 100)
+                            data.houseStatuses[nextNum] = {
+                                status         = bal < 5000000 and "warning" or "good",
+                                lastCheck      = os.time() - math.random(60, 3600),
+                                needsAttention = false,
+                                lastBalance    = bal,
+                                earnings       = {
+                                    btc = math.random(0, 100),
+                                    asc = hasAsc and math.random(0, 50) or 0,
+                                },
+                                cardLevels     = {},
+                                issues         = {},
+                                minCoolant     = fakeCoolant,
+                                coolantsNeeded = fakeCoolant < 50 and math.random(1, 5) or 0,
+                                isFake         = true,
+                            }
+
+                            cfg.cardSnapshots[tostring(nextNum)] = {
+                                dailyBtcRate = math.random(10, 80) / 10,
+                                dailyAscRate = hasAsc and (math.random(5, 30) / 10) or 0,
+                                time         = os.time(),
+                                incomeObs    = {},
+                                isFake       = true,
+                            }
+
+                            utils.debugChat(string.format(
+                                "{FFE133}DEBUG: добавлен тестовый дом №%d (%s, $%s).",
+                                nextNum, city, utils.formatNumber(bal)))
+                        end
+
+                        if imgui.Selectable(u8 "Удалить все тестовые дома", false) then
+                            local removed = 0
+                            local kept    = {}
+                            for _, h in ipairs(data.dialogData.flashminer) do
+                                if h.isFake then
+                                    data.houseStatuses[h.house_number]          = nil
+                                    cfg.cardSnapshots[tostring(h.house_number)] = nil
+                                    removed                                     = removed + 1
+                                else
+                                    table.insert(kept, h)
+                                end
+                            end
+                            data.dialogData.flashminer = kept
+                            for k, snap in pairs(cfg.cardSnapshots) do
+                                if type(snap) == 'table' and snap.isFake then
+                                    cfg.cardSnapshots[k] = nil
+                                    removed = removed + 1
+                                end
+                            end
+                            save()
+                            utils.debugChat(string.format(
+                                "{FFE133}DEBUG: удалено тестовых записей: %d.", removed))
                         end
                     end
                 end
