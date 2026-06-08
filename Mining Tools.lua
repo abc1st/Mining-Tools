@@ -1,6 +1,6 @@
 script_name('Mining Tools')
 script_author('JustFedot -- Modified by kernelich')
-script_version('2.5.1')
+script_version('2.5.2')
 script_version_number(2)
 script_description('Скрипт для упрощения майнинга на сервере.')
 
@@ -232,6 +232,7 @@ local function getDefaultCfg()
         silentMode               = false,
         checkForUpdates          = false,
         useDialogMode            = false,
+        helpShown                = false,
 
         -- Заливка
         useSuperCoolant          = false,
@@ -358,6 +359,10 @@ local data = {
     showLogsWindow         = imgui.new.bool(false),
     showSettingsWindow     = imgui.new.bool(false),
     showImproveWindow      = imgui.new.bool(false),
+    showHelpWindow         = imgui.new.bool(false),
+    helpPage               = 1,
+    setupPage              = 1,
+    helpWindowMode         = 'reference',
     settingsTab            = 0,
     cheatSubTab            = 0,
     debugSubTab            = 0,
@@ -2526,6 +2531,7 @@ local coolantTool = (function()
             or dialogId == dialogIdTable.houseFlashMinerDialogId then
             state.outOfSupply   = false
             state.doneForDialog = false
+            state.pending       = false
         end
     end
 
@@ -3012,6 +3018,469 @@ local collectTool = (function()
     return self
 end)()
 
+-- Помощь
+local helpTool = (function()
+    local self = {}
+
+    local function openWindow(setter)
+        setter()
+    end
+
+    local function gotoSettings(tab, subTab)
+        data.showSettingsWindow[0] = true
+        data.settingsTab           = tab
+        if subTab ~= nil then data.cheatSubTab = subTab end
+    end
+
+    local function actionBtn(icon, label, id, onClick)
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.15, 0.22, 0.35, 1))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.25, 0.40, 1))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.20, 0.28, 0.45, 1))
+        if imgui.Button(icon .. "  " .. u8(label) .. "##help_" .. id, imgui.ImVec2(-1, 28)) then
+            onClick()
+        end
+        imgui.PopStyleColor(3)
+    end
+
+    local function bullet(text)
+        imgui.Text(fa.CARET_RIGHT)
+        imgui.SameLine(0, 6)
+        imgui.TextColoredRGB(text)
+    end
+
+    local function example(id, height, text)
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.12, 0.13, 0.09, 1))
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.35, 0.32, 0.12, 1))
+        imgui.BeginChild("##helpex_" .. id, imgui.ImVec2(0, height), true,
+            imgui.WindowFlags.NoResize + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        imgui.TextColoredRGB("{FFE133} Пример")
+        imgui.TextColoredRGB(text)
+        imgui.EndChild()
+        imgui.PopStyleColor(2)
+    end
+
+    local function section(icon, title)
+        imgui.Text(icon)
+        imgui.SameLine(0, 6)
+        imgui.TextColoredRGB("{87CEFA}" .. title)
+        imgui.Spacing()
+    end
+
+    local setupPages = {
+        {
+            title = "Добро пожаловать",
+            render = function()
+                section(fa.HOUSE, "Первоначальная настройка")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Mining Tools — помощник для майнинг-ферм:\n{C0C0C0}сбор крипты, включение карт, пополнение баланса,\n{C0C0C0}заточка и статистика.")
+                imgui.Spacing()
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Пройдём пару базовых настроек. Полное описание\n{C0C0C0}всех функций потом будет в Настройки, вкладка «Помощь».")
+                imgui.Spacing()
+                imgui.TextColoredRGB(
+                    "{FF6B6B}ВНИМАНИЕ: автоматизация может быть запрещена\n{FF6B6B}на вашем сервере. Уточните правила и используйте\n{FF6B6B}на свой риск.")
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Команды: {FFFFFF}/fls {808080}— окно, {FFFFFF}/mnt {808080}— вкл/выкл.")
+            end,
+        },
+        {
+            title = "Целевой баланс",
+            render = function()
+                section(fa.COINS, "Целевой баланс домов")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}До какой суммы пополнять баланс дома при\n{C0C0C0}пополнении. Чем выше — тем реже пополнять.")
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Целевой баланс:")
+                imgui.PushItemWidth(-1)
+                if imgui.SliderInt("##setBal", imcfg.targetHouseBalance, 5000000, 60000000,
+                        u8("$" .. utils.formatNumber(imcfg.targetHouseBalance[0]))) then
+                    local v = math.floor(imcfg.targetHouseBalance[0] / 100000 + 0.5) * 100000
+                    cfg.targetHouseBalance = v; imcfg.targetHouseBalance[0] = v; save()
+                end
+                imgui.PopItemWidth()
+                imgui.Spacing()
+                example("setbal", 80,
+                    "{C0C0C0}$20.000.000 — баланс каждого дома будет\n{C0C0C0}доводиться до 20 млн при пополнении.")
+            end,
+        },
+        {
+            title = "Скорость диалогов",
+            render = function()
+                section(fa.CLOCK, "Скорость диалогов")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Как быстро скрипт взаимодействует с диалогами.\n{C0C0C0}Меньше пауза = быстрее, но при лагах сервера\n{C0C0C0}может кикать.")
+                imgui.Spacing()
+                imgui.PushItemWidth(-1)
+                if imgui.SliderInt("##setPause", imcfg.pause_duration, 150, 300, u8 "%d мс") then
+                    cfg.pause_duration = imcfg.pause_duration[0]; save()
+                end
+                if imgui.SliderInt("##setCount", imcfg.count_action, 1, 20,
+                        u8(string.format("пауза каждые %d", imcfg.count_action[0]))) then
+                    cfg.count_action = imcfg.count_action[0]; save()
+                end
+                imgui.PopItemWidth()
+                imgui.Spacing()
+                example("setspeed", 100,
+                    "{C0C0C0}Хороший пинг и фпс — 230 мс. Если начинает\n{C0C0C0}кикать античит — поднимите до 250-300 мс. \n{C0C0C0}Рекомендованные значения 250 - 8.")
+            end,
+        },
+        {
+            title = "Автоматизация стойки",
+            render = function()
+                section(fa.DROPLET, "Автоматизация стойки")
+                imgui.TextColoredRGB("{FFFFFF}Что делать, когда вы вручную открываете стойку\n{C0C0C0}видеокарт в доме.")
+                imgui.Spacing()
+                if imgui.Checkbox(u8 "Авто-заливка жидкости при открытии стойки", imcfg.fixCoolantEnabled) then
+                    cfg.fixCoolantEnabled = imcfg.fixCoolantEnabled[0]; save()
+                end
+                imgui.Hint("Доливать охлаждающую жидкость сразу при открытии стойки.")
+                if imgui.Checkbox(u8 "Авто-включение карт при открытии стойки", imcfg.autoEnableCardsOnOpen) then
+                    cfg.autoEnableCardsOnOpen = imcfg.autoEnableCardsOnOpen[0]
+                    if cfg.autoEnableCardsOnOpen then
+                        cfg.autoEnableCards = false; imcfg.autoEnableCards[0] = false
+                    end
+                    save()
+                end
+                imgui.Hint("Включать выключенные карты сразу при открытии стойки.")
+            end,
+        },
+        {
+            title = "Готово",
+            render = function()
+                section(fa.CIRCLE_CHECK, "Базовая настройка завершена")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Этого достаточно для старта. Остальные функции\n{C0C0C0}(заточка, авто-функции, уведомления, фильтры)\n{C0C0C0}настраиваются в любой момент.")
+                imgui.Spacing()
+                imgui.TextColoredRGB(
+                    "{87CEFA}Полное описание всех возможностей — в\n{87CEFA}Настройки, вкладка «Помощь».\n{C0C0C0}Кнопка настроек находится в правом верхнем углу, рядом с кнопкой закрыть.")
+                imgui.Spacing()
+                actionBtn(fa.CIRCLE_QUESTION, "Открыть полную справку", "tohelp", function()
+                    data.helpPage       = 1
+                    data.helpWindowMode = 'reference'
+                end)
+            end,
+        },
+    }
+
+    local refPages = {
+        {
+            title = "Обзор",
+            render = function()
+                section(fa.HOUSE, "Mining Tools")
+                imgui.TextColoredRGB("{FFFFFF}Помощник для управления майнинг-фермами.")
+                bullet("{C0C0C0}сбор крипты и включение видеокарт")
+                bullet("{C0C0C0}пополнение баланса и оплата налогов")
+                bullet("{C0C0C0}заточка карт и подробная статистика")
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Команды:")
+                bullet("{FFFFFF}/fls {808080}— открыть/закрыть основное окно")
+                bullet("{FFFFFF}/mnt {808080}— включить/выключить скрипт")
+                bullet("{FFFFFF}/mntd {808080}— режим отладки")
+            end,
+        },
+        {
+            title = "Основное окно",
+            render = function()
+                section(fa.HOUSE, "Основное окно")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Все дома показаны карточками. На карточке видны\n{C0C0C0}статус, баланс, налог, крипта, видеокарты и\n{C0C0C0}минимальный уровень охлаждающей жидкости.")
+                imgui.Spacing()
+                example("mainwin", 100,
+                    "{C0C0C0}Красный баланс = деньги почти кончились, дом\n{C0C0C0}скоро встанет. Жёлтая жидкость = скоро нужна\n{C0C0C0}заливка.")
+            end,
+        },
+        {
+            title = "Управление",
+            render = function()
+                section(fa.ARROW_UP_SHORT_WIDE, "Мышь и клавиатура")
+                bullet("{FFFFFF}ЛКМ по дому {808080}— зайти в него")
+                bullet("{FFFFFF}ПКМ по дому {808080}— меню (исключить и т.д.)")
+                bullet("{FFFFFF}Колесо {808080}— прокрутка списка")
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Стрелки (когда открыто основное окно):")
+                bullet("{FFFFFF}влево / вправо {808080}— выбор соседней карты")
+                bullet("{FFFFFF}вверх / вниз {808080}— переход на строку")
+                bullet("{FFFFFF}Enter {808080}— зайти в выбранный дом")
+                imgui.Spacing()
+                example("nav", 80,
+                    "{C0C0C0}Выбранный дом подсвечивается и сам\n{C0C0C0}прокручивается в зону видимости.")
+            end,
+        },
+        {
+            title = "Поиск и сортировка",
+            render = function()
+                section(fa.ARROW_DOWN_WIDE_SHORT, "Поиск и сортировка")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Сверху окна — поиск по номеру/городу и фильтры\n{C0C0C0}(уровни карт, города, скрытые дома).")
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Сортировка:")
+                bullet("{C0C0C0}выбираете поле (номер, баланс, охлаждение и т.д.)")
+                bullet("{C0C0C0}кнопка со стрелкой меняет порядок\n{C0C0C0}(по возрастанию / по убыванию)")
+                imgui.Spacing()
+            end,
+        },
+        {
+            title = "Действия",
+            render = function()
+                section(fa.GEAR, "Кнопки действий")
+                bullet("{FFD700}Собрать {808080}— снять крипту со всех домов")
+                bullet("{87CEFA}Включить {808080}— включить все видеокарты")
+                bullet("{FF6B6B}Выключить {808080}— выключить все карты")
+                bullet("{FFA500}Обновить {808080}— обновить данные домов")
+                bullet("{00E600}Пополнить {808080}— пополнить баланс всех домов до целевого значения. \n{808080}Можно переключить в режим Авто-обслуживания, тогда при нажатии будет выполняться не просто пополнение, а набор действий, который настраивается на вкладке «Фермы».")
+                imgui.Spacing()
+                imgui.TextColoredRGB(
+                    "{C788FF}Авто-обслуживание {808080}— выполняет выбранный\n{808080}набор действий сразу. Что именно — настраивается\n{808080}на вкладке «Фермы».")
+                imgui.Spacing()
+                actionBtn(fa.GEAR, "Настроить действия обслуживания", "cfgfix", function()
+                    gotoSettings(1)
+                end)
+            end,
+        },
+        {
+            title = "Подсказки",
+            render = function()
+                section(fa.CIRCLE_QUESTION, "Подсказки")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Почти у каждой настройки и кнопки есть подсказка.\n{C0C0C0}Наведите курсор на элемент — появится поясняющий текст.")
+                imgui.Spacing()
+                example("hint", 60,
+                    "{C0C0C0}Наведите на этот текст-пример... у подсказок такой вид.")
+                imgui.Hint("Вот так выглядит подсказка при наведении.")
+            end,
+        },
+        {
+            title = "Баланс домов",
+            render = function()
+                section(fa.COINS, "Целевой баланс домов")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}До какой суммы пополнять баланс дома при\n{C0C0C0}пополнении (кнопкой обслуживания или авто).")
+                imgui.Spacing()
+                imgui.PushItemWidth(-1)
+                if imgui.SliderInt("##refBal", imcfg.targetHouseBalance, 5000000, 60000000,
+                        u8("$" .. utils.formatNumber(imcfg.targetHouseBalance[0]))) then
+                    local v = math.floor(imcfg.targetHouseBalance[0] / 100000 + 0.5) * 100000
+                    cfg.targetHouseBalance = v; imcfg.targetHouseBalance[0] = v; save()
+                end
+                imgui.PopItemWidth()
+                imgui.Spacing()
+                example("refbal", 80,
+                    "{C0C0C0}$20.000.000 — баланс каждого дома будет\n{C0C0C0}доводиться до 20 млн при пополнении.")
+            end,
+        },
+        {
+            title = "Заливка охлаждения",
+            render = function()
+                section(fa.DROPLET, "Как работает заливка")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Скрипт доливает охлаждающую жидкость в карты,\n{C0C0C0}у которых уровень упал ниже заданного порога.\n{C0C0C0}По умолчанию доливает до 100.\n{C0C0C0}Можно включить режим экономии, \n{C0C0C0}про него написано на следующей странице.")
+                imgui.Spacing()
+                bullet("{C0C0C0}порог заливки задаётся в настройках ферм")
+                bullet("{C0C0C0}карты выше порога не трогаются (экономия)")
+                imgui.Spacing()
+                example("fill", 80,
+                    "{C0C0C0}Порог 30: карта на 25 будет долита,\n{C0C0C0}карта на 60 — нет.")
+            end,
+        },
+        {
+            title = "Экономный режим",
+            render = function()
+                section(fa.DROPLET, "Режим экономии жидкости")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Экономит охлаждающую жидкость при заливке.\n{C0C0C0}Если после первой жидкости уровень охлаждения\n{C0C0C0}достигает 70 и выше — вторая не расходуется.")
+                imgui.Spacing()
+                bullet("{C0C0C0}работает только с обычными жидкостями")
+                bullet("{C0C0C0}не работает в Вайс-Сити и для суперохлаждающих")
+                bullet("{C0C0C0}без режима скрипт всегда заливает до 100%")
+                imgui.Spacing()
+                example("econ", 80,
+                    "{C0C0C0}Одной жидкости хватило до 72 — режим\n{C0C0C0}остановится и не потратит вторую.")
+                imgui.Spacing()
+                actionBtn(fa.GEAR, "Открыть настройки ферм", "cfgecon", function()
+                    gotoSettings(1)
+                end)
+            end,
+        },
+        {
+            title = "Автоматизация стойки",
+            render = function()
+                section(fa.DROPLET, "Автоматизация стойки")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Что делать автоматически при ручном открытии\n{C0C0C0}стойки. {FF6B6B}Не работает через Флешку Майнера.")
+                imgui.Spacing()
+                if imgui.Checkbox(u8 "Авто-заливка жидкости при открытии стойки", imcfg.fixCoolantEnabled) then
+                    cfg.fixCoolantEnabled = imcfg.fixCoolantEnabled[0]; save()
+                end
+                imgui.Hint("Доливать жидкость сразу при открытии стойки.")
+                if imgui.Checkbox(u8 "Авто-включение карт при открытии стойки", imcfg.autoEnableCardsOnOpen) then
+                    cfg.autoEnableCardsOnOpen = imcfg.autoEnableCardsOnOpen[0]
+                    if cfg.autoEnableCardsOnOpen then
+                        cfg.autoEnableCards = false; imcfg.autoEnableCards[0] = false
+                    end
+                    save()
+                end
+                imgui.Hint("Включать выключенные карты сразу при открытии стойки.")
+            end,
+        },
+        {
+            title = "Скорость диалогов",
+            render = function()
+                section(fa.CLOCK, "Скорость диалогов")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Как быстро скрипт взаимодействует с диалогами.\n{C0C0C0}Меньше пауза = быстрее, но при лагах сервера\n{C0C0C0}может кикать.")
+                imgui.Spacing()
+                imgui.PushItemWidth(-1)
+                if imgui.SliderInt("##refPause", imcfg.pause_duration, 150, 300, u8 "%d мс") then
+                    cfg.pause_duration = imcfg.pause_duration[0]; save()
+                end
+                if imgui.SliderInt("##refCount", imcfg.count_action, 1, 20,
+                        u8(string.format("пауза каждые %d", imcfg.count_action[0]))) then
+                    cfg.count_action = imcfg.count_action[0]; save()
+                end
+                imgui.PopItemWidth()
+            end,
+        },
+        {
+            title = "Уведомления",
+            render = function()
+                section(fa.CIRCLE_EXCLAMATION, "Окно уведомлений")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Всплывающее окно (например, перед автосбором).\n{C0C0C0}Длительность настраивается ниже, позицию —\n{C0C0C0}через предпросмотр.")
+                imgui.Spacing()
+                imgui.PushItemWidth(-1)
+                if imgui.SliderInt("##refDur", imcfg.notifyShowDuration, 3, 30,
+                        u8(string.format("показывать %d сек.", imcfg.notifyShowDuration[0]))) then
+                    cfg.notifyShowDuration = imcfg.notifyShowDuration[0]; save()
+                end
+                imgui.PopItemWidth()
+                imgui.Spacing()
+                actionBtn(fa.WAND_MAGIC_SPARKLES, "Предпросмотр (перетащите для позиции)", "prev", function()
+                    data.notifyWindow.btcAmount  = 150
+                    data.notifyWindow.mode       = 'reminder'
+                    data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
+                    data.notifyWindow.isPreview  = true
+                    data.notifyWindow.show[0]    = true
+                end)
+            end,
+        },
+        {
+            title = "Заточка и логи",
+            render = function()
+                section(fa.WAND_MAGIC_SPARKLES, "Заточка карт")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Подойдите к месту заточки — появится плашка-\n{C0C0C0}подсказка. В окне заточки задаются параметры,\n{C0C0C0}а статистика по картам копится в Логах.")
+                imgui.Spacing()
+                actionBtn(fa.WAND_MAGIC_SPARKLES, "Открыть окно заточки", "openimp", function()
+                    openWindow(function() data.showImproveWindow[0] = true end)
+                end)
+                imgui.Spacing()
+                section(fa.CLOCK_ROTATE_LEFT, "Логи")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Общее — все события; По дням — за день;\n{C0C0C0}Заточка — статистика по картам. Сверху\n{C0C0C0}выбирается период.")
+                imgui.Spacing()
+                actionBtn(fa.CLOCK_ROTATE_LEFT, "Открыть логи", "openlogs", function()
+                    openWindow(function() data.showLogsWindow[0] = true end)
+                end)
+            end,
+        },
+        {
+            title = "Авто-функции",
+            render = function()
+                section(fa.GEAR, "Авто-функции")
+                imgui.TextColoredRGB(
+                    "{FFFFFF}Автосбор по расписанию, умный автосбор,\n{C0C0C0}налоги, пополнение баланса, фоновое\n{C0C0C0}обновление и уведомления — на вкладке «Авто».")
+                imgui.Spacing()
+                imgui.TextColoredRGB(
+                    "{FF6B6B}ВНИМАНИЕ: авто-функции могут быть запрещены\n{FF6B6B}на вашем сервере. Используйте на свой риск.")
+                imgui.Spacing()
+                actionBtn(fa.GEAR, "Открыть настройки авто-функций", "cfgauto", function()
+                    gotoSettings(2, 0)
+                end)
+            end,
+        },
+        {
+            title = "Если что-то не так",
+            render = function()
+                section(fa.CIRCLE_EXCLAMATION, "Частые ситуации")
+                bullet("{FFD700}Не отсканировался подвал / ошибочно «без подвала»")
+                imgui.TextColoredRGB(
+                    "{C0C0C0}Нажмите «Проверить подвалы» — все дома будут\n{C0C0C0}просканированы заново.")
+                imgui.Spacing()
+                bullet("{FFD700}Купили новый дом")
+                imgui.TextColoredRGB(
+                    "{C0C0C0}Откройте основное окно (/fls): новые дома\n{C0C0C0}сканируются автоматически. Если нет —\n{C0C0C0}«Проверить подвалы».")
+                imgui.Spacing()
+                bullet("{FFD700}При «Обновить» обновились не все дома")
+                imgui.TextColoredRGB("{C0C0C0}Просто нажмите «Обновить» ещё раз.")
+                imgui.Spacing()
+                bullet("{FFD700}Действие зависло / прервалось")
+                imgui.TextColoredRGB(
+                    "{C0C0C0}Дождитесь конца PayDay или перезапустите действие по новой.\n{C0C0C0}Пауза на PayDay позволяет избежать кика при пролаге сервера.")
+                imgui.Spacing()
+                actionBtn(fa.BOX_OPEN, "Проверить подвалы (пересканировать всё)", "rescan", function()
+                    if not data.working then
+                        local task                 = buildTaskTable('scanBasements')
+                        data.showHelpWindow[0]     = false
+                        data.showSettingsWindow[0] = false
+                        runTaskAndReopenDialog(function() task:run(nil) end)
+                    else
+                        utils.addChat("{F78181}Дождитесь завершения текущей операции.")
+                    end
+                end)
+            end,
+        },
+    }
+
+    local function pager(pages, pageKey, idPrefix)
+        local total = #pages
+        if data[pageKey] < 1 then data[pageKey] = 1 end
+        if data[pageKey] > total then data[pageKey] = total end
+        local page = pages[data[pageKey]]
+
+        imgui.Text(fa.CIRCLE_QUESTION)
+        imgui.SameLine(0, 6)
+        imgui.TextColoredRGB(string.format("{FFFFFF}%s  {808080}(%d/%d)",
+            page.title, data[pageKey], total))
+        imgui.Separator()
+        imgui.Spacing()
+
+        page.render()
+
+        imgui.Spacing()
+        imgui.Separator()
+        imgui.Spacing()
+        local availW  = imgui.GetContentRegionAvail().x
+        local gap     = imgui.GetStyle().ItemSpacing.x
+        local btnW    = (availW - gap) / 2
+        local atStart = data[pageKey] <= 1
+        local atEnd   = data[pageKey] >= total
+
+        if atStart then imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.10, 0.10, 1)) end
+        if imgui.Button(fa.ARROW_LEFT .. "  " .. u8("Назад") .. "##" .. idPrefix .. "Prev", imgui.ImVec2(btnW, 30)) and not atStart then
+            data[pageKey] = data[pageKey] - 1
+        end
+        if atStart then imgui.PopStyleColor() end
+
+        imgui.SameLine(0, gap)
+
+        if atEnd then imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.10, 0.10, 1)) end
+        if imgui.Button(u8("Далее") .. "  " .. fa.ARROW_RIGHT .. "##" .. idPrefix .. "Next", imgui.ImVec2(btnW, 30)) and not atEnd then
+            data[pageKey] = data[pageKey] + 1
+        end
+        if atEnd then imgui.PopStyleColor() end
+    end
+
+    function self.pageCount() return #refPages end
+
+    function self.setupPageCount() return #setupPages end
+
+    function self.renderReference() pager(refPages, 'helpPage', 'helpRef') end
+
+    function self.renderSetup() pager(setupPages, 'setupPage', 'helpSetup') end
+
+    return self
+end)()
+
 local houseStatusHelper = {
     colors = {
         bad = imgui.ImVec4(1, 0.2, 0.2, 1),
@@ -3280,6 +3749,10 @@ function main()
 
     local escHandlers = {
         {
+            cond = function() return data.showHelpWindow[0] end,
+            act = function() data.showHelpWindow[0] = false end
+        },
+        {
             cond = function() return data.showImproveWindow[0] end,
             act = function() data.showImproveWindow[0] = false end
         },
@@ -3458,7 +3931,11 @@ function main()
     -- для подсчёта тиков заточки
     lua_thread.create(function()
         while true do
-            wait(10)
+            local active = data.improve.isOn
+                or data.improve.oils.busy
+                or data.improve.cef.probing
+                or data.improve.needCheckOils
+            wait(active and 10 or 100)
             improveTool.tick()
         end
     end)
@@ -5261,8 +5738,8 @@ imgui.OnFrame(
     function(self)
         local inImproveRange = isInImproveHintRange()
         local curMode        = data.notifyWindow.mode
-        local higherPriority = curMode == 'countdown' or curMode == 'collecting'
-            or (curMode == 'reminder' and data.notifyWindow.show[0])
+        local higherPriority = (curMode == 'countdown' or curMode == 'collecting'
+            or curMode == 'reminder') and data.notifyWindow.show[0]
         if inImproveRange and not higherPriority then
             data.notifyWindow.show[0]    = true
             data.notifyWindow.mode       = 'improveHint'
@@ -5428,6 +5905,60 @@ imgui.OnFrame(
         end
 
         imgui.PopStyleColor(5)
+    end
+)
+
+-- окно помощни
+imgui.OnFrame(
+    function() return data.showHelpWindow[0] end,
+    function(self)
+        applyStyle()
+        local sw, sh = getScreenResolution()
+        imgui.SetNextWindowSizeConstraints(imgui.ImVec2(560, 100), imgui.ImVec2(560, sh - 40))
+        imgui.SetNextWindowPos(
+            imgui.ImVec2(sw / 2, sh / 2),
+            imgui.Cond.FirstUseEver,
+            imgui.ImVec2(0.5, 0.5)
+        )
+
+        if imgui.Begin("##helpWin", data.showHelpWindow,
+                imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar +
+                imgui.WindowFlags.NoResize + imgui.WindowFlags.NoScrollbar + 64) then
+            local imStyle     = imgui.GetStyle()
+            local winW        = imgui.GetWindowWidth()
+
+            local isSetup     = data.helpWindowMode == 'setup'
+            local titleIcon   = isSetup and fa.GEAR or fa.CIRCLE_QUESTION
+            local titleStr    = isSetup and "Первоначальная настройка" or "Помощь"
+
+            local totalTitleW = imgui.CalcTextSize(titleIcon).x + 8 + imgui.CalcTextSize(titleStr).x
+            imgui.SetCursorPos(imgui.ImVec2((winW - totalTitleW) / 2, imStyle.ItemSpacing.y + 3))
+            imgui.Text(titleIcon)
+            imgui.SameLine(0, 8)
+            imgui.SetCursorPosY(imStyle.ItemSpacing.y + 3)
+            imgui.TextColoredRGB("{FFFFFF}Помощь")
+
+            imgui.SetCursorPos(imgui.ImVec2(winW - 50 - imStyle.ItemSpacing.x, imStyle.ItemSpacing.y))
+            if imgui.Button(fa.XMARK .. "##helpClose", imgui.ImVec2(40, 22)) then
+                data.showHelpWindow[0] = false
+            end
+            imgui.Hint("Закрыть справку")
+            imgui.Separator()
+            imgui.Spacing()
+
+            if isSetup then
+                helpTool.renderSetup()
+            else
+                helpTool.renderReference()
+            end
+
+            imgui.Spacing()
+            if imgui.Button(u8(isSetup and "Завершить настройку" or "Понятно, закрыть"), imgui.ImVec2(-1, 30)) then
+                data.showHelpWindow[0] = false
+            end
+
+            imgui.End()
+        end
     end
 )
 
@@ -5940,7 +6471,7 @@ imgui.OnFrame(
             imgui.Hint("Закрыть настройки")
             imgui.Separator()
 
-            local tabs = { u8 "Общее", u8 "Фермы", u8 "Авто", u8 "Прочее" }
+            local tabs = { u8 "Общее", u8 "Фермы", u8 "Авто", u8 "Прочее", u8 "Помощь" }
             if cfg.debug then
                 table.insert(tabs, u8 "Отладка")
             end
@@ -6058,7 +6589,45 @@ imgui.OnFrame(
                         if imgui.Checkbox(u8 "Только пополнение баланса", imcfg.useSimpleTopUp) then
                             cfg.useSimpleTopUp = imcfg.useSimpleTopUp[0]; save()
                         end
-                        imgui.Hint("Кнопка обслуживания только пополнит баланс.")
+                        imgui.Hint(
+                            "Быстрый режим: кнопка обслуживания только пополнит баланс,\nне заходя в каждую стойку. Действия ниже при этом игнорируются.")
+
+                        imgui.Spacing()
+                        imgui.Text(fa.GEAR)
+                        imgui.SameLine(0, 6)
+                        imgui.TextColoredRGB("{87CEFA}Что делать кнопкой обслуживания")
+                        imgui.Hint(
+                            "Выберите действия для кнопки «Авто-обслуживание».\nИх можно комбинировать в любом сочетании —\nнапример, только собрать крипту, или\nсобрать и сразу включить видеокарты.")
+
+                        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                        imgui.BeginChild("##fixActions", imgui.ImVec2(0, 120), true,
+                            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                        if cfg.useSimpleTopUp then
+                            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1))
+                            imgui.PushStyleColor(imgui.Col.CheckMark, imgui.ImVec4(0.5, 0.5, 0.5, 1))
+                            imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.10, 0.10, 0.10, 1))
+                            imgui.PushStyleColor(imgui.Col.FrameBgHovered, imgui.ImVec4(0.10, 0.10, 0.10, 1))
+                            imgui.Checkbox(u8 "Собирать крипту", imgui.new.bool(cfg.fixCollectEnabled))
+                            imgui.Checkbox(u8 "Включать видеокарты", imgui.new.bool(cfg.fixSwitchEnabled))
+                            imgui.Checkbox(u8 "Пополнять баланс", imgui.new.bool(cfg.fixTopUpEnabled))
+                            imgui.PopStyleColor(4)
+                            imgui.Hint("Недоступно: включён режим «Только пополнение баланса».")
+                        else
+                            if imgui.Checkbox(u8 "Собирать крипту", imcfg.fixCollectEnabled) then
+                                cfg.fixCollectEnabled = imcfg.fixCollectEnabled[0]; save()
+                            end
+                            imgui.Hint("Снимать криптовалюту со всех домов.")
+                            if imgui.Checkbox(u8 "Включать видеокарты", imcfg.fixSwitchEnabled) then
+                                cfg.fixSwitchEnabled = imcfg.fixSwitchEnabled[0]; save()
+                            end
+                            imgui.Hint("Включать выключенные карты.")
+                            if imgui.Checkbox(u8 "Пополнять баланс", imcfg.fixTopUpEnabled) then
+                                cfg.fixTopUpEnabled = imcfg.fixTopUpEnabled[0]; save()
+                            end
+                            imgui.Hint("Пополнять баланс домов до целевого значения.")
+                        end
+                        imgui.EndChild()
+                        imgui.PopStyleColor()
 
                         imgui.Spacing()
                         imgui.Separator()
@@ -6696,7 +7265,8 @@ imgui.OnFrame(
                         imgui.TextColoredRGB("{808080}Недоступно в текущем режиме.")
                     end
                 elseif data.settingsTab == 3 then
-                    if imgui.Checkbox(u8 "Пауза на PayDay", imcfg.pauseOnPayday) then
+                    imgui.TextColoredRGB("{87CEFA}Пауза на PayDay")
+                    if imgui.Checkbox(u8 "Приостанавливать действия на PayDay", imcfg.pauseOnPayday) then
                         cfg.pauseOnPayday = imcfg.pauseOnPayday[0]; save()
                     end
                     imgui.Hint("Делать паузу во время PayDay.")
@@ -6761,8 +7331,25 @@ imgui.OnFrame(
                     imgui.Hint("Количество взаимодействий с диалогами до паузы.")
                     imgui.PopItemWidth()
 
-                    -- Вкладка 4: Отладка
-                elseif data.settingsTab == 4 and cfg.debug then
+                    -- Вкладка 4: Помощь
+                elseif data.settingsTab == 4 then
+                    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.28, 0.45, 1))
+                    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20, 0.30, 0.48, 1))
+                    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.32, 0.50, 1))
+                    if imgui.Button(fa.ARROW_UP_FROM_BRACKET .. "  " .. u8("Открыть в отдельном окне"),
+                            imgui.ImVec2(-1, 28)) then
+                        data.helpPage              = 1
+                        data.helpWindowMode        = 'reference'
+                        data.showSettingsWindow[0] = false
+                        data.showHelpWindow[0]     = true
+                    end
+                    imgui.PopStyleColor(3)
+                    imgui.Hint("Показать справку в отдельном перемещаемом окне.")
+                    imgui.Spacing()
+                    helpTool.renderReference()
+
+                    -- Вкладка 5: Отладка
+                elseif data.settingsTab == 5 and cfg.debug then
                     imgui.TextColoredRGB("{FFE133}Инструменты отладки")
                     imgui.Spacing()
 
@@ -7270,7 +7857,6 @@ imgui.OnFrame(
     end
 )
 
-
 -- окно обновления
 imgui.OnFrame(
     function() return updateState.showPopup[0] end,
@@ -7394,9 +7980,13 @@ imgui.OnFrame(
     end
 )
 -- окно логов
-local _logsSaveT     = 0
-local _logsActiveTab = 0
-local _logsPrevTab   = 0
+local _logsSaveT       = 0
+local _logsActiveTab   = 0
+local _logsPrevTab     = 0
+local _logsFlatRows    = nil
+local _logsFlatSig     = nil
+local _improveFlatRows = nil
+local _improveFlatSig  = nil
 
 imgui.OnFrame(
     function() return data.showLogsWindow[0] end,
@@ -7652,25 +8242,47 @@ imgui.OnFrame(
                     else
                         imgui.Scroller("logs_main", 30, 400,
                             imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
-                        for _, dateStr in ipairs(dates) do
-                            local ds = dailySums[dateStr]
-                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.11, 0.13, 0.18, 1))
-                            imgui.BeginChild("dayhead_" .. dateStr, imgui.ImVec2(0, 28), true,
-                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                            imgui.SetCursorPos(imgui.ImVec2(8, (28 - imgui.GetTextLineHeight()) / 2))
-                            imgui.Text(fa.CALENDAR_DAYS)
-                            imgui.SameLine(0, 6)
-                            imgui.TextColoredRGB("{FFA500}" .. dateStr)
-                            imgui.SameLine(0, 10)
-                            imgui.TextColoredRGB(string.format("{808080}%d зап.", ds.count))
-                            imgui.EndChild()
-                            imgui.PopStyleColor()
-
-                            local dayEntries = logsTool.getEntriesByDate(dateStr)
-                            for j = #dayEntries, 1, -1 do
-                                renderLogEntry(dayEntries[j], "allentry_" .. dateStr .. "_" .. j, 30)
+                        local sig = tostring(totalSessions) .. "|" .. tostring(#dates)
+                        if _logsFlatSig ~= sig then
+                            _logsFlatRows = {}
+                            local rows = _logsFlatRows
+                            for _, dateStr in ipairs(dates) do
+                                local ds = dailySums[dateStr]
+                                rows[#rows + 1] = { kind = 'header', date = dateStr, count = ds.count }
+                                local dayEntries = logsTool.getEntriesByDate(dateStr)
+                                for j = #dayEntries, 1, -1 do
+                                    rows[#rows + 1] = {
+                                        kind   = 'entry',
+                                        entry  = dayEntries[j],
+                                        prefix = "allentry_" .. dateStr .. "_" .. j,
+                                    }
+                                end
                             end
-                            imgui.Spacing()
+                            _logsFlatSig = sig
+                        end
+
+                        local rows = _logsFlatRows
+                        local clipper = imgui.ImGuiListClipper()
+                        clipper:Begin(#rows)
+                        while clipper:Step() do
+                            for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                                local r = rows[i]
+                                if r.kind == 'header' then
+                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.11, 0.13, 0.18, 1))
+                                    imgui.BeginChild("dayhead_" .. r.date, imgui.ImVec2(0, 30), true,
+                                        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                                    imgui.SetCursorPos(imgui.ImVec2(8, (30 - imgui.GetTextLineHeight()) / 2))
+                                    imgui.Text(fa.CALENDAR_DAYS)
+                                    imgui.SameLine(0, 6)
+                                    imgui.TextColoredRGB("{FFA500}" .. r.date)
+                                    imgui.SameLine(0, 10)
+                                    imgui.TextColoredRGB(string.format("{808080}%d зап.", r.count))
+                                    imgui.EndChild()
+                                    imgui.PopStyleColor()
+                                else
+                                    renderLogEntry(r.entry, r.prefix, 30)
+                                end
+                            end
                         end
                     end
                     imgui.EndChild()
@@ -7757,8 +8369,14 @@ imgui.OnFrame(
                             if imgui.BeginChild("##dayEntries", imgui.ImVec2(0, 0), false, imgui.WindowFlags.NoScrollWithMouse) then
                                 imgui.Scroller("logs_day_entries", 34, 400,
                                     imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
-                                for j = #selEntries, 1, -1 do
-                                    renderLogEntry(selEntries[j], "entry_" .. selDate .. "_" .. j, 34)
+                                local nEnt    = #selEntries
+                                local clipper = imgui.ImGuiListClipper()
+                                clipper:Begin(nEnt)
+                                while clipper:Step() do
+                                    for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                                        local j = nEnt - i + 1
+                                        renderLogEntry(selEntries[j], "entry_" .. selDate .. "_" .. j, 34)
+                                    end
                                 end
                                 imgui.EndChild()
                             end
@@ -8132,93 +8750,124 @@ imgui.OnFrame(
                             end
                         end
 
-                        local sessions = {}
-                        for _, c in ipairs(cardsList) do
-                            local key = c.sessionId or ((c.date or '') .. '|' .. (c.time or ''))
-                            if not sessions[key] then
-                                sessions[key] = {
-                                    key       = key,
-                                    date      = c.date or '',
-                                    time      = c.time or '',
-                                    startedAt = c.startedAt,
-                                    cards     = {},
-                                }
-                            end
-                            table.insert(sessions[key].cards, c)
-                        end
-                        local sessKeys = {}
-                        for k, _ in pairs(sessions) do table.insert(sessKeys, k) end
-                        table.sort(sessKeys, function(a, b)
-                            local sa, sb = sessions[a], sessions[b]
-                            if sa.date ~= sb.date then
-                                local function dkey(s)
-                                    local d, m, y = s:match("(%d+)%.(%d+)%.(%d+)")
-                                    return tonumber(string.format("%04d%02d%02d",
-                                        tonumber(y) or 0, tonumber(m) or 0, tonumber(d) or 0)) or 0
+                        local improveSig = tostring(#cardsList) .. "|"
+                            .. tostring(stats.improveSessions or 0) .. "|"
+                            .. tostring(data.logsPeriodFilter)
+                        if _improveFlatSig ~= improveSig then
+                            local sessions = {}
+                            for _, c in ipairs(cardsList) do
+                                local key = c.sessionId or ((c.date or '') .. '|' .. (c.time or ''))
+                                if not sessions[key] then
+                                    sessions[key] = {
+                                        key       = key,
+                                        date      = c.date or '',
+                                        time      = c.time or '',
+                                        startedAt = c.startedAt,
+                                        cards     = {},
+                                    }
                                 end
-                                return dkey(sa.date) > dkey(sb.date)
+                                table.insert(sessions[key].cards, c)
                             end
-                            local sat, sbt = sa.startedAt or 0, sb.startedAt or 0
-                            if sat > 0 and sbt > 0 then return sat > sbt end
-                            return (sa.time or '') > (sb.time or '')
-                        end)
-
-                        local showDateInHeader = data.logsPeriodFilter ~= 1
-                        local rowIdx = 0
-                        for _, sk in ipairs(sessKeys) do
-                            local sess              = sessions[sk]
-
-                            local sumSpent, sumOils = 0, 0
-                            local hasPerf, hasSto   = false, false
-                            for _, c in ipairs(sess.cards) do
-                                sumSpent = sumSpent + (c.spent or 0)
-                                sumOils  = sumOils + (c.oils or 0)
-                                if c.isStorage then hasSto = true else hasPerf = true end
-                            end
-
-                            local startStr = sess.startedAt and os.date('%H:%M', sess.startedAt) or sess.time
-
-                            imgui.Spacing()
-                            imgui.Text(fa.CLOCK)
-                            imgui.SameLine(0, 6)
-                            if showDateInHeader and sess.date ~= '' then
-                                imgui.TextColoredRGB("{FFA500}" .. sess.date)
-                                imgui.SameLine(0, 6)
-                                imgui.TextColoredRGB("{B0B0B0}" .. startStr)
-                            else
-                                local headerLbl = (hasSto and not hasPerf) and "Хранилище" or "Заточка"
-                                imgui.TextColoredRGB("{FFA500}" .. headerLbl)
-                                imgui.SameLine(0, 6)
-                                imgui.TextColoredRGB("{B0B0B0}" .. startStr)
-                            end
-                            imgui.SameLine(0, 12)
-                            if hasSto and not hasPerf then
-                                imgui.TextColoredRGB(string.format(
-                                    "{808080}%d карт  ·  {C788FF}хранилище",
-                                    #sess.cards))
-                            elseif hasSto and hasPerf then
-                                imgui.TextColoredRGB(string.format(
-                                    "{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.  ·  {C788FF}+хранилище",
-                                    #sess.cards, utils.formatNumber(sumSpent), sumOils))
-                            else
-                                imgui.TextColoredRGB(string.format(
-                                    "{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.",
-                                    #sess.cards, utils.formatNumber(sumSpent), sumOils))
-                            end
-                            imgui.Spacing()
-
-                            table.sort(sess.cards, function(a, b)
-                                local ea = a.endLevel or 0
-                                local eb = b.endLevel or 0
-                                if ea ~= eb then return ea > eb end
-                                local ga = ea - (a.startLevel or 0)
-                                local gb = eb - (b.startLevel or 0)
-                                if ga ~= gb then return ga > gb end
-                                return (a.spent or 0) > (b.spent or 0)
+                            local sessKeys = {}
+                            for k, _ in pairs(sessions) do table.insert(sessKeys, k) end
+                            table.sort(sessKeys, function(a, b)
+                                local sa, sb = sessions[a], sessions[b]
+                                if sa.date ~= sb.date then
+                                    local function dkey(s)
+                                        local d, m, y = s:match("(%d+)%.(%d+)%.(%d+)")
+                                        return tonumber(string.format("%04d%02d%02d",
+                                            tonumber(y) or 0, tonumber(m) or 0, tonumber(d) or 0)) or 0
+                                    end
+                                    return dkey(sa.date) > dkey(sb.date)
+                                end
+                                local sat, sbt = sa.startedAt or 0, sb.startedAt or 0
+                                if sat > 0 and sbt > 0 then return sat > sbt end
+                                return (sa.time or '') > (sb.time or '')
                             end)
-                            for _, c in ipairs(sess.cards) do
-                                rowIdx = rowIdx + 1
-                                renderCardRow(c, rowIdx)
+
+                            local showDateInHeader = data.logsPeriodFilter ~= 1
+                            _improveFlatRows       = {}
+                            local rows             = _improveFlatRows
+                            local rowIdx           = 0
+                            for _, sk in ipairs(sessKeys) do
+                                local sess              = sessions[sk]
+
+                                local sumSpent, sumOils = 0, 0
+                                local hasPerf, hasSto   = false, false
+                                for _, c in ipairs(sess.cards) do
+                                    sumSpent = sumSpent + (c.spent or 0)
+                                    sumOils  = sumOils + (c.oils or 0)
+                                    if c.isStorage then hasSto = true else hasPerf = true end
+                                end
+
+                                local startStr = sess.startedAt and os.date('%H:%M', sess.startedAt) or sess.time
+
+                                local left
+                                if showDateInHeader and sess.date ~= '' then
+                                    left = "{FFA500}" .. sess.date
+                                else
+                                    left = "{FFA500}" .. ((hasSto and not hasPerf) and "Хранилище" or "Заточка")
+                                end
+                                local statsStr
+                                if hasSto and not hasPerf then
+                                    statsStr = string.format("{808080}%d карт  ·  {C788FF}хранилище", #sess.cards)
+                                elseif hasSto and hasPerf then
+                                    statsStr = string.format(
+                                        "{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.  ·  {C788FF}+хранилище",
+                                        #sess.cards, utils.formatNumber(sumSpent), sumOils)
+                                else
+                                    statsStr = string.format("{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.",
+                                        #sess.cards, utils.formatNumber(sumSpent), sumOils)
+                                end
+
+                                rows[#rows + 1] = {
+                                    kind = 'header',
+                                    key = sk,
+                                    left = left,
+                                    time = "{B0B0B0}" .. startStr,
+                                    stats = statsStr,
+                                }
+
+                                table.sort(sess.cards, function(a, b)
+                                    local ea = a.endLevel or 0
+                                    local eb = b.endLevel or 0
+                                    if ea ~= eb then return ea > eb end
+                                    local ga = ea - (a.startLevel or 0)
+                                    local gb = eb - (b.startLevel or 0)
+                                    if ga ~= gb then return ga > gb end
+                                    return (a.spent or 0) > (b.spent or 0)
+                                end)
+                                for _, c in ipairs(sess.cards) do
+                                    rowIdx = rowIdx + 1
+                                    rows[#rows + 1] = { kind = 'card', card = c, id = rowIdx }
+                                end
+                            end
+                            _improveFlatSig = improveSig
+                        end
+
+                        local rows    = _improveFlatRows
+                        local clipper = imgui.ImGuiListClipper()
+                        clipper:Begin(#rows)
+                        while clipper:Step() do
+                            for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                                local r = rows[i]
+                                if r.kind == 'header' then
+                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
+                                    imgui.BeginChild("##isess_" .. r.key, imgui.ImVec2(0, 28), true,
+                                        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                                    imgui.SetCursorPos(imgui.ImVec2(8, (28 - imgui.GetTextLineHeight()) / 2))
+                                    imgui.Text(fa.CLOCK)
+                                    imgui.SameLine(0, 6)
+                                    imgui.TextColoredRGB(r.left)
+                                    imgui.SameLine(0, 6)
+                                    imgui.TextColoredRGB(r.time)
+                                    imgui.SameLine(0, 12)
+                                    imgui.TextColoredRGB(r.stats)
+                                    imgui.EndChild()
+                                    imgui.PopStyleColor()
+                                else
+                                    renderCardRow(r.card, r.id)
+                                end
                             end
                         end
                     else
@@ -8447,7 +9096,16 @@ function __i__bottomPanel()
 end
 
 -- при флешке майнера
+local _fashFrame      = 0
+local _fashMemoFrame  = -1
+local _fashMemoHouses = nil
+local _fashMemoLevels = nil
+local _fashMemoCities = nil
+
 local function filterAndSortHouses(houses)
+    if _fashMemoFrame == _fashFrame and _fashMemoHouses ~= nil then
+        return _fashMemoHouses, _fashMemoLevels, _fashMemoCities
+    end
     local searchText = ffi.string(searchBuffer):lower()
     local filtered = {}
 
@@ -8592,12 +9250,23 @@ local function filterAndSortHouses(houses)
             return va > vb
         end)
     end
-
+    _fashMemoFrame  = _fashFrame
+    _fashMemoHouses = filtered
+    _fashMemoLevels = availableLevels
+    _fashMemoCities = availableCities
     return filtered, availableLevels, availableCities
 end
 
 -- флешка майнера
 imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(player)
+    _fashFrame = _fashFrame + 1
+    if not cfg.helpShown and not cfg.useDialogMode then
+        data.setupPage         = 1
+        data.helpWindowMode    = 'setup'
+        data.showHelpWindow[0] = true
+        cfg.helpShown          = true
+        save()
+    end
     applyStyle()
     local sw, sh = getScreenResolution()
     imgui.SetNextWindowSize(imgui.ImVec2(1000, 680), imgui.Cond.FirstUseEver)
@@ -8887,16 +9556,19 @@ imgui.OnFrame(function() return data.showHouseControlWindow[0] end, function(pla
             fixIcon  = fa.DOLLAR_SIGN
             fixColor = imgui.ImVec4(0.4, 0.7, 0.4, 1)
             fixHint  = "Пополнить баланс ферм до целевого значения"
-        elseif not cfg.fixTopUpEnabled then
-            fixLabel = "Авто-обслуживание"
-            fixIcon  = fa.WAND_MAGIC_SPARKLES
-            fixColor = imgui.ImVec4(0.6, 0.4, 0.9, 1)
-            fixHint  = "Собрать крипту\nВключить видеокарты\n{808080}(пополнение баланса выключено)"
         else
-            fixLabel = "Авто-обслуживание"
-            fixIcon  = fa.WAND_MAGIC_SPARKLES
-            fixColor = imgui.ImVec4(0.6, 0.4, 0.9, 1)
-            fixHint  = "Пополнить баланс ферм\nСобрать криптовалюту\nВключить видеокарты"
+            fixLabel    = "Авто-обслуживание"
+            fixIcon     = fa.GEAR
+            fixColor    = imgui.ImVec4(0.6, 0.4, 0.9, 1)
+            local parts = {}
+            if cfg.fixCollectEnabled then table.insert(parts, "Собрать криптовалюту") end
+            if cfg.fixSwitchEnabled then table.insert(parts, "Включить видеокарты") end
+            if cfg.fixTopUpEnabled then table.insert(parts, "Пополнить баланс ферм") end
+            if #parts == 0 then
+                fixHint = "{F78181}Не выбрано ни одного действия.\n{808080}Включите их в настройках в вкладке «Фермы»."
+            else
+                fixHint = table.concat(parts, "\n")
+            end
         end
         DrawActionBtn(fixLabel, fixIcon, fixColor, "fixAllProblems")
         imgui.Hint(fixHint)
@@ -9897,11 +10569,9 @@ function imgui.customTitleBar(param, resetFunc, windowWidth)
     imgui.SetCursorPosX(windowWidth - 50 - imStyle.ItemSpacing.x)
     imgui.SetCursorPosY(imStyle.ItemSpacing.y)
     if imgui.ButtonClickable("Подождите...", not data.working, fa("XMARK") .. "##close_button", imgui.ImVec2(50, 25)) then
-        if data.showHouseControlWindow[0] then
-            fixI()
-            param[0] = false
-            data.showSettingsWindow[0] = false
-        end
+        fixI()
+        param[0] = false
+        data.showSettingsWindow[0] = false
     end
 
     if imgui.BeginPopup("donationPopupMenu") then
