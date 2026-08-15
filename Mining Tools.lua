@@ -1,6 +1,6 @@
 script_name('Mining Tools')
 script_author('JustFedot -- Modified by kernelich')
-script_version('2.5.3')
+script_version('2.5.4')
 script_version_number(2)
 script_description('Скрипт для упрощения майнинга на сервере.')
 
@@ -52,12 +52,12 @@ end
 
 local dialogIdTable = {
     arizona = {
-        videoCardSt = 25244, -- ID диалога полки
-        videoCardDialogId = 25245, -- ID диалога управления видеокартой (Стойка/Полка)
-        coolantDialogId = 25271, -- ID диалога выбора охлаждающей жидкости
+        videoCardSt = 25243, -- ID диалога полки
+        videoCardDialogId= 25244, -- ID диалога управления видеокартой (Стойка/Полка)
+        coolantDialogId = 25270, -- ID диалога выбора охлаждающей жидкости
         houseDialogId = 7238, -- ID диалога выбора дома
         houseFlashMinerDialogId = 25182, -- ID диалога выбора видеокарты в доме
-        videoCardAcceptDialogId = 25246, -- ID диалога подтверждения вывода прибыли
+        videoCardAcceptDialogId = 25245, -- ID диалога подтверждения вывода прибыли
 
         phoneBankMenuId = 6565, -- ID главного меню банка в телефоне
         payAllTaxesDialogId = 15252, -- ID диалога подтверждения оплаты всех налогов
@@ -4121,6 +4121,10 @@ function main()
         end
     end
 
+    sampRegisterChatCommand('test', function()
+        utils.pressButton(1024)
+    end)
+
     sampRegisterChatCommand('mnt', function()
         cfg.active = not cfg.active
         utils.addChat(cfg.active and "Скрипт {99ff99}включен." or "Скрипт {F78181}отключен.")
@@ -4838,7 +4842,7 @@ function sampev.onServerMessage(color, text)
             data.withdraw.asc = data.withdraw.asc + tonumber(text:match("Вы вывели {ffffff}(%d+)"))
         end
         return false
-    elseif text:find("^Вам был добавлен предмет") and
+    elseif text:find("^Вам был добавлен предмет") or text:find("добавлен предмет") and
         (text:find(":item1811:") or text:find(":item5996:") or text:find("BTC") or text:find("ASC")) then
         return false
     elseif text:find("^Добавлено в инвентарь") and text:find("BTC") then
@@ -5402,11 +5406,12 @@ function buildTaskTable(taskType, ...)
                         refill_count = 1
                     end
 
+                    dialogActions.selectCard(sendResponse, card.index - 1)
                     for i = 1, refill_count do
                         if data.stopAction then
                             break
                         end
-                        dialogActions.selectCard(sendResponse, card.index - 1)
+                        
                         dialogActions.refillCoolant(sendResponse, card.fluidType, effectiveSuper,
                             card.card_type == "ASIC")
                     end
