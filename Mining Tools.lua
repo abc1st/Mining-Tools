@@ -1,10 +1,9 @@
 script_name('Mining Tools')
 script_author('JustFedot -- Modified by kernelich')
-script_version('2.5.4')
+script_version('2.5.5')
 script_version_number(2)
 script_description('Скрипт для упрощения майнинга на сервере.')
 
-local sampfuncs = require("sampfuncs")
 local sampev = require("samp.events")
 local encoding = require("encoding")
 encoding.default = 'CP1251'
@@ -13,15 +12,15 @@ local imgui = require("mimgui")
 local effil = require('effil')
 local ffi = require('ffi')
 local fa = require('fAwesome6')
-local raknet = require('samp.raknet')
 local wm = require('windows.message')
-local new = imgui.new
+local raknet = require('samp.raknet')
+local sampfuncs = require("sampfuncs")
 
 -- local UPDATE_CHECK_URL = nil
 local UPDATE_CHECK_URL = "https://raw.githubusercontent.com/abc1st/Mining-Tools/main/version.json"
 
-local searchBuffer = new.char[256]()
-local currentStatusFilter = new.int(0)
+local searchBuffer = imgui.new.char[256]()
+local currentStatusFilter = imgui.new.int(0)
 local selectedCardLevels = {}
 local selectedCities = {}
 local _snapshotSaveT = 0
@@ -30,6 +29,7 @@ local sortItems = {u8 "По номеру", u8 "По балансу", u8 "По циклам", u8 "По жидко
                    u8 "По видеокартам", u8 "По городу"}
 local statusItems = {u8 "Все дома", u8 "В норме", u8 "Требует внимания",
                      u8 "Есть проблемы", u8 "Без подвала"}
+local rackSortItems = {u8 "По номеру", u8 "Сначала требующие внимания"}
 require('samp.synchronization')
 
 if sampev.INTERFACE.INCOMING_RPCS[61][2].dialogId == "uint16" then
@@ -50,29 +50,19 @@ if sampev.INTERFACE.INCOMING_RPCS[61][2].dialogId == "uint16" then
     }}
 end
 
+---------------------- ID Диалогов
 local dialogIdTable = {
-    arizona = {
-        videoCardSt = 25243, -- ID диалога полки
-        videoCardDialogId= 25244, -- ID диалога управления видеокартой (Стойка/Полка)
-        coolantDialogId = 25270, -- ID диалога выбора охлаждающей жидкости
-        houseDialogId = 7238, -- ID диалога выбора дома
-        houseFlashMinerDialogId = 25182, -- ID диалога выбора видеокарты в доме
-        videoCardAcceptDialogId = 25245, -- ID диалога подтверждения вывода прибыли
-
-        phoneBankMenuId = 6565, -- ID главного меню банка в телефоне
-        payAllTaxesDialogId = 15252, -- ID диалога подтверждения оплаты всех налогов
-        houseListBankId = 7238, -- ID диалога выбора дома для пополнения (тот же что и houseDialogId)
-        topUpBalanceDialogId = 27036 -- ID диалога ввода суммы пополнения
-
-    },
-    rodina = {
-        videoCardSt = 25244, -- ID диалога полки
-        videoCardDialogId = 270, -- ID диалога управления видеокартой (Стойка/Полка)
-        coolantDialogId = 25271, -- ID диалога выбора охлаждающей жидкости
-        houseDialogId = 7238, -- ID диалога выбора дома
-        houseFlashMinerDialogId = 269, -- ID диалога выбора видеокарты в доме
-        videoCardAcceptDialogId = 271 -- ID диалога подтверждения вывода прибыли
-    }
+    videoCardSt = 25243, -- ID диалога списка карт
+    videoCardDialogId = 25244, -- ID меню выбранной видеокарты
+    coolantDialogId = 25270, -- ID выбора охлаждающей жидкости
+    houseDialogId = 7238, -- ID списка домов
+    houseFlashMinerDialogId = 25182, -- ID списка видеокарт в доме
+    videoCardAcceptDialogId = 25245, -- ID подтверждения сбора криптовалюты
+    videoCardRemoveDialogId = 25246, -- ID вытаскивания видеокарты
+    phoneBankMenuId = 6565, -- ID меню банка в телефоне
+    payAllTaxesDialogId = 15252, -- ID подтверждения оплаты налогов
+    houseListBankId = 7238, -- ID списка домов для пополнения
+    topUpBalanceDialogId = 27039 -- ID ввода суммы пополнения
 }
 
 local gpuImprovePriceByLevel = {
@@ -106,7 +96,7 @@ local IMPROVE_SPOT = {
     z = 14.15
 }
 local IMPROVE_HINT_RADIUS = 1
-
+--------------------  Создание и сохранение кфг
 do
     Jcfg = {
         _version = 0.1,
@@ -230,15 +220,13 @@ local function getDefaultCfg()
         debug = false,
         silentMode = false,
         checkForUpdates = false,
-        useDialogMode = false,
-        helpShown = false,
 
         -- Заливка
         useSuperCoolant = false,
         useCoolantPercent = 50,
         economyMode = false,
-        pause_duration = 300,
-        count_action = 8,
+        pause_duration = 260,
+        count_action = 9,
 
         -- Дома
         housesWithoutBasement = {},
@@ -329,6 +317,10 @@ local function getDefaultCfg()
         improveTimeoutDialog = 10,
         improveProbeOpenDelay = 1500,
 
+        -- Интерфейс стойки
+        rackSortMode = 0,
+        rackShowRawTooltip = true,
+
         -- Фиксы
         fixSwitchEnabled = true,
         fixCollectEnabled = true,
@@ -358,33 +350,49 @@ local data = {
     showLogsWindow = imgui.new.bool(false),
     showSettingsWindow = imgui.new.bool(false),
     showImproveWindow = imgui.new.bool(false),
-    showHelpWindow = imgui.new.bool(false),
     helpPage = 1,
     setupPage = 1,
     helpWindowMode = 'reference',
+    mainMenuTab = "houses",
     settingsTab = 0,
+    settingsSidebarCollapsed = false,
     cheatSubTab = 0,
     debugSubTab = 0,
     improveSubTab = 0,
     logsTab = imgui.new.int(0),
     lastWindowState = {
-        main = false,
         houseControl = false
     },
 
     -- Список домов
     selectedHouseIndex = 1,
+    selectedRackCardIndex = 1,
+    rackDisplayOrder = {},
+    rackScrollToSelection = nil,
+    rackUserSessionActive = false,
+    rackCardActionActive = false,
+    rackPendingAction = nil,
+    rackPendingSourceIndex = nil,
+    rackPendingCoolantRemaining = 0,
+    rackPendingStartedAt = 0,
+    rackActionCooldownUntil = 0,
+    rackRemovePending = false,
+    rackRemovePendingUntil = 0,
+    rackActionRows = {},
     lastSelectedHouse = -1,
     scrollToSelection = false,
     dialogData = {
         flashminer = {},
         videocards = {}
     },
+    dialogSerial = 0,
+    dialogSeen = {},
     taskTypeNow = '',
     houseStatuses = {},
     isFlashminer = false,
     hasFlashminer = nil,
     dFlashminerId = 0,
+    rackDialogId = dialogIdTable.videoCardSt,
     flashminerSwitchId = {
         direction = 0,
         id = 0
@@ -394,13 +402,12 @@ local data = {
     filteredHouses = nil,
 
     -- Сервер
-    isRodina = false,
     isViceCity = false,
 
     -- Состояние
     working = false,
     fix = false,
-    silentWindowOpen = false,
+    backgroundSessionActive = false,
     stopAction = false,
     suppressDialogs = false,
     suppressDialogsUntil = 0,
@@ -463,6 +470,7 @@ local data = {
 
     -- PayDay
     isWaitingPayday = false,
+    debugForcePayday = false,
     paydaySkippedAt = 0,
     skipPayday = false,
 
@@ -537,6 +545,12 @@ local data = {
             attempts = 0,
             success = 0,
             fail = 0,
+            performanceAttempts = 0,
+            performanceSuccess = 0,
+            performanceFail = 0,
+            storageAttempts = 0,
+            storageSuccess = 0,
+            storageFail = 0,
             oilsUsed = 0,
             spent = 0,
             lastReason = ''
@@ -654,151 +668,255 @@ local utils = (function()
     return self
 end)()
 
-function requestRunner()
-    return effil.thread(function(httpMethod, url, requestBody)
-        local requestLib = require('requests')
-        local success, response = pcall(requestLib.request, httpMethod, url, requestBody)
-        if success then
-            response.json, response.xml = nil
-            return true, response
-        else
-            return false, tostring(response)
-        end
-    end)
-end
-
-function handleAsyncHttpRequestThread(requestThread, successCallback, errorCallback)
-    local threadStatus, threadError
-    repeat
-        threadStatus, threadError = requestThread:status()
-        wait(0)
-    until threadStatus ~= 'running'
-    if not threadError then
-        if threadStatus == 'completed' then
-            local requestSuccess, response = requestThread:get(0)
-            if requestSuccess then
-                successCallback(response)
-            else
-                errorCallback(response)
-            end
-            return
-        elseif threadStatus == 'canceled' then
-            return errorCallback(threadStatus)
-        end
-    else
-        return errorCallback(tostring(threadError))
-    end
-end
-
-function asyncHttpRequest(httpMethod, url, requestBody, successCallback, errorCallback)
-    requestBody = requestBody or {}
-    requestBody.headers = requestBody.headers or {}
-
-    local requestThread = requestRunner()(httpMethod, url, requestBody)
-    successCallback = successCallback or function()
-    end
-    errorCallback = errorCallback or function()
-    end
-
-    return {
-        effilRequestThread = requestThread,
-        luaHttpHandleThread = lua_thread.create(handleAsyncHttpRequestThread, requestThread, successCallback,
-            errorCallback)
+--------------------  Обновление
+local UPDATE_CHECK_URL = "https://raw.githubusercontent.com/abc1st/Mining-Tools/main/version.json"
+local checkForUpdates, downloadAndUpdate, updateState = (function()
+    local state = {
+        hasUpdate = false,
+        latestVersion = nil,
+        updateUrl = nil,
+        changelog = "",
+        showPopup = imgui.new.bool(false),
+        declined = false,
+        checking = false
     }
-end
 
-local updateState = {
-    hasUpdate = false,
-    latestVersion = nil,
-    updateUrl = nil,
-    changelog = "",
-    showPopup = imgui.new.bool(false),
-    declined = false,
-    checking = false
-}
+    local function requestRunner()
+        return effil.thread(function(httpMethod, url, requestBody)
+            local requests = require("requests")
+            local success, response = pcall(requests.request, httpMethod, url, requestBody)
 
-function downloadAndUpdate()
-    if not updateState.updateUrl then
-        return
+            if not success then
+                return false, tostring(response)
+            end
+
+            response.json = nil
+            response.xml = nil
+
+            return true, response
+        end)
     end
-    utils.addChat("{FFE133}Загружаю обновление...")
-    updateState.showPopup[0] = false
 
-    asyncHttpRequest("GET", updateState.updateUrl, {}, function(resp)
-        if resp.status_code == 200 or resp.status_code == 201 then
+    local function handleRequestThread(requestThread, successCallback, errorCallback)
+        local threadStatus
+        local threadError
+
+        repeat
+            threadStatus, threadError = requestThread:status()
+            wait(0)
+        until threadStatus ~= "running"
+
+        if threadError then
+            errorCallback(tostring(threadError))
+            return
+        end
+
+        if threadStatus == "canceled" then
+            errorCallback(threadStatus)
+            return
+        end
+
+        if threadStatus ~= "completed" then
+            errorCallback("Unknown request state: " .. tostring(threadStatus))
+            return
+        end
+
+        local requestSuccess, response = requestThread:get(0)
+
+        if requestSuccess then
+            successCallback(response)
+        else
+            errorCallback(response)
+        end
+    end
+
+    local function asyncHttpRequest(httpMethod, url, requestBody, successCallback, errorCallback)
+        requestBody = requestBody or {}
+        requestBody.headers = requestBody.headers or {}
+
+        successCallback = successCallback or function()
+        end
+
+        errorCallback = errorCallback or function()
+        end
+
+        local requestThread = requestRunner()(httpMethod, url, requestBody)
+
+        return {
+            effilRequestThread = requestThread,
+            luaHttpHandleThread = lua_thread.create(handleRequestThread, requestThread, successCallback, errorCallback)
+        }
+    end
+
+    local function compareVersions(left, right)
+        local function parseVersion(value)
+            local result = {}
+
+            value = tostring(value or ""):lower():gsub("^v", "")
+
+            for part in value:gmatch("%d+") do
+                result[#result + 1] = tonumber(part) or 0
+            end
+
+            return result
+        end
+
+        local leftParts = parseVersion(left)
+        local rightParts = parseVersion(right)
+
+        if #leftParts == 0 or #rightParts == 0 then
+            return nil
+        end
+
+        for index = 1, math.max(#leftParts, #rightParts) do
+            local leftPart = leftParts[index] or 0
+            local rightPart = rightParts[index] or 0
+
+            if leftPart > rightPart then
+                return 1
+            elseif leftPart < rightPart then
+                return -1
+            end
+        end
+
+        return 0
+    end
+
+    local function resetAvailableUpdate()
+        state.hasUpdate = false
+        state.updateUrl = nil
+        state.changelog = ""
+        state.showPopup[0] = false
+    end
+
+    local function downloadAndUpdate()
+        if not state.hasUpdate or not state.updateUrl then
+            return
+        end
+
+        utils.addChat("{FFE133}Загружаю обновление...")
+        state.showPopup[0] = false
+
+        asyncHttpRequest("GET", state.updateUrl, {}, function(response)
+            if response.status_code ~= 200 and response.status_code ~= 201 then
+                utils.addChat("{F78181}Ошибка загрузки: HTTP " .. tostring(response.status_code))
+                return
+            end
+
             local oldPath = thisScript().path
-            local dir = oldPath:match("(.+)[/\\]")
-            local newPath = dir .. "\\Mining Tools.lua"
-            local sameFile = (oldPath:lower() == newPath:lower())
+            local directory = oldPath:match("(.+)[/\\]")
 
+            if not directory then
+                utils.addChat("{F78181}Не удалось определить папку скрипта.")
+                return
+            end
+
+            local newPath = directory .. "\\Mining Tools.lua"
+            local isSameFile = oldPath:lower() == newPath:lower()
             local file = io.open(newPath, "wb")
-            if file then
-                file:write(resp.text)
-                file:close()
-                wait(50)
 
-                if sameFile then
-                    thisScript():reload()
-                else
-                    script.load(newPath)
-                    wait(50)
-                    for _, s in pairs(script.list()) do
-                        if s.path == oldPath then
-                            s:unload()
-                            break
-                        end
-                    end
-                    wait(50)
-                    os.remove(oldPath)
-                end
-            else
+            if not file then
                 utils.addChat("{F78181}Не удалось сохранить файл обновления.")
+                return
             end
-        else
-            utils.addChat("{F78181}Ошибка загрузки: HTTP " .. tostring(resp.status_code))
-        end
-    end, function()
-        utils.addChat("{F78181}Ошибка соединения при загрузке обновления.")
-    end)
-end
 
-function checkForUpdates()
-    if not cfg.checkForUpdates or updateState.checking then
-        return
-    end
-    if UPDATE_CHECK_URL == nil then
-        return
-    end
-    updateState.checking = true
-    utils.debugChat("[UPDATE] Проверяю обновления...")
+            file:write(response.text)
+            file:close()
 
-    asyncHttpRequest("GET", UPDATE_CHECK_URL, {}, function(resp)
-        updateState.checking = false
-        if resp.status_code == 200 or resp.status_code == 304 then
-            local json = require('dkjson')
-            local ok, info = pcall(json.decode, resp.text)
-            if ok and info and info.latest then
-                if info.latest ~= script.this.version then
-                    updateState.hasUpdate = true
-                    updateState.latestVersion = info.latest
-                    updateState.updateUrl = info.updateurl
-                    updateState.changelog = u8:decode(info.changelog or "")
-                    updateState.showPopup[0] = false
-                    utils.debugChat("[UPDATE] Доступна версия: " .. info.latest)
-                else
-                    utils.debugChat("[UPDATE] Версия актуальна (" .. info.latest .. ")")
+            wait(50)
+
+            if isSameFile then
+                thisScript():reload()
+                return
+            end
+
+            script.load(newPath)
+            wait(50)
+
+            for _, loadedScript in pairs(script.list()) do
+                if loadedScript.path == oldPath then
+                    loadedScript:unload()
+                    break
                 end
-            else
-                utils.debugChat("[UPDATE] Не удалось разобрать ответ сервера")
             end
-        else
-            utils.debugChat("[UPDATE] HTTP ошибка: " .. tostring(resp.status_code))
+
+            wait(50)
+            os.remove(oldPath)
+        end, function(errorMessage)
+            utils.addChat("{F78181}Ошибка соединения при загрузке обновления.")
+
+            utils.debugChat("[UPDATE] Ошибка загрузки: " .. tostring(errorMessage or "unknown"))
+        end)
+    end
+
+    local function checkForUpdates()
+        if not cfg.checkForUpdates or state.checking then
+            return
         end
-    end, function(err)
-        updateState.checking = false
-        utils.debugChat("[UPDATE] Ошибка соединения: " .. tostring(err or "unknown"))
-    end)
-end
+
+        if not UPDATE_CHECK_URL then
+            return
+        end
+
+        state.checking = true
+        utils.debugChat("[UPDATE] Проверяю обновления...")
+
+        asyncHttpRequest("GET", UPDATE_CHECK_URL, {}, function(response)
+            state.checking = false
+
+            if response.status_code ~= 200 and response.status_code ~= 304 then
+                utils.debugChat("[UPDATE] HTTP ошибка: " .. tostring(response.status_code))
+                return
+            end
+
+            local json = require("dkjson")
+            local success, information = pcall(json.decode, response.text)
+
+            if not success or not information or not information.latest then
+                resetAvailableUpdate()
+                utils.debugChat("[UPDATE] Не удалось разобрать ответ сервера")
+                return
+            end
+
+            local currentVersion = tostring(script.this.version or "0")
+
+            local latestVersion = tostring(information.latest)
+
+            local comparison = compareVersions(latestVersion, currentVersion)
+
+            state.latestVersion = latestVersion
+            state.declined = false
+
+            if comparison == 1 then
+                state.hasUpdate = true
+                state.updateUrl = information.updateurl
+                state.changelog = u8:decode(information.changelog or "")
+                state.showPopup[0] = false
+
+                utils.debugChat("[UPDATE] Доступна версия: " .. latestVersion)
+                return
+            end
+
+            resetAvailableUpdate()
+
+            if comparison == 0 then
+                utils.debugChat("[UPDATE] Версия актуальна (" .. latestVersion .. ")")
+            elseif comparison == -1 then
+                utils.debugChat(string.format(
+                    "[UPDATE] Локальная версия %s новее опубликованной %s.",
+                    currentVersion, latestVersion))
+            else
+                utils.debugChat("[UPDATE] Некорректный формат версии: " .. latestVersion)
+            end
+        end, function(errorMessage)
+            state.checking = false
+
+            utils.debugChat("[UPDATE] Ошибка соединения: " .. tostring(errorMessage or "unknown"))
+        end)
+    end
+
+    return checkForUpdates, downloadAndUpdate, state
+end)()
 
 local progressTracker = {
     reset = function()
@@ -823,7 +941,7 @@ local progressTracker = {
         end
     end
 }
-
+-- Для выбора нужных кнопок в диалогах
 local dialogActions = {
     selectHouse = function(sr, houseIndex)
         sr(dialogIdTable.houseDialogId, 1, houseIndex, "")
@@ -848,17 +966,17 @@ local dialogActions = {
         sr(dialogIdTable.videoCardDialogId, 0, 0, "")
     end,
     refillCoolant = function(sr, fluidType, useSuper, isAsic)
-        local coolantIndex
-        if data.isRodina then
-            coolantIndex = isAsic and 3 or 2
-        else
-            coolantIndex = isAsic and 4 or 3
-        end
+        local coolantIndex = isAsic and 4 or 3
+
         sr(dialogIdTable.videoCardDialogId, 1, coolantIndex, "")
         local fluid_listitem = (fluidType == 1 and (useSuper and 1 or 0)) or (fluidType == 2 and (useSuper and 1 or 2))
         if fluid_listitem ~= nil then
             sr(dialogIdTable.coolantDialogId, 1, fluid_listitem, "")
         end
+    end,
+    removeCard = function(sr)
+        sr(dialogIdTable.videoCardDialogId, 1, 4, "")
+        sr(dialogIdTable.videoCardRemoveDialogId, 1, 0, "")
     end
 }
 
@@ -975,24 +1093,21 @@ local logsTool = (function()
         improve = {
             icon = fa.MICROCHIP,
             labelFn = function(e)
-                if type(e.cards) == 'table' and #e.cards > 0 then
-                    local hasStorage, hasPerf = false, false
+                local storageAttempts = tonumber(e.storageAttempts) or 0
+                local performanceAttempts = tonumber(e.performanceAttempts) or 0
+                if storageAttempts == 0 and performanceAttempts == 0 and type(e.cards) == 'table' then
                     for _, c in ipairs(e.cards) do
                         if c.isStorage then
-                            hasStorage = true
+                            storageAttempts = storageAttempts + (c.attempts or 0)
                         else
-                            hasPerf = true
-                        end
-                        if hasStorage and hasPerf then
-                            break
+                            performanceAttempts = performanceAttempts + (c.attempts or 0)
                         end
                     end
-                    if hasStorage and not hasPerf then
-                        return "Улучшение хранилища"
-                    end
-                    if hasStorage and hasPerf then
-                        return "Заточка карт + хранилище"
-                    end
+                end
+                if storageAttempts > 0 and performanceAttempts == 0 then
+                    return "Улучшение хранилища"
+                elseif storageAttempts > 0 and performanceAttempts > 0 then
+                    return "Заточка карт + хранилище"
                 end
                 return "Заточка карт"
             end,
@@ -1003,6 +1118,10 @@ local logsTool = (function()
                 end
                 if (e.fail or 0) > 0 then
                     table.insert(parts, string.format("%d пров.", e.fail))
+                end
+                if (e.storageAttempts or 0) > 0 then
+                    table.insert(parts, string.format("хранилище: %d/%d", e.storageSuccess or 0,
+                        e.storageAttempts or 0))
                 end
                 if (e.spent or 0) > 0 then
                     table.insert(parts, string.format("$%s", utils.formatNumber(e.spent)))
@@ -1310,146 +1429,228 @@ end)()
 
 logsTool.load()
 
--- Для парсинга
+-- Сбор данных с домов
 local flashminerTool = (function()
     local self = {}
 
+    local state = {
+        revision = 0,
+        lastParseTime = 0
+    }
+
+    -- Удаляет пробелы в начале и конце строки.
+    local function trim(value)
+        return tostring(value or ""):match("^%s*(.-)%s*$")
+    end
+
+    -- Удаляются цвета
+    local function removeColorTags(value)
+        return tostring(value or ""):gsub("{%x%x%x%x%x%x}", ""):gsub("%[%x%x%x%x%x%x%]", "")
+    end
+
+    -- Оставляет в строке только цифры.
+    local function parseDigits(value)
+        local digits = tostring(value or ""):gsub("[^%d]", "")
+
+        return tonumber(digits) or 0
+    end
+
+    -- Преобразует игровые обозначения денежных сумм в число
+    local function parseAmount(value)
+        value = trim(value)
+
+        if value == "" then
+            return 0
+        end
+
+        local cash = value:match(":CASH:%s*([%d%.,%s]+)")
+
+        if cash then
+            return parseDigits(cash)
+        end
+
+        return parseDigits(value)
+    end
+
+    -- Разбирает часть строки после номера дома.
+    local function parseHouseDetails(value)
+        value = removeColorTags(value)
+        local balance = 0
+        local maxBalance = 0
+
+        local currentBalanceText, maxBalanceText = value:match("%((.-)%s*/%s*(.-)%)")
+
+        if currentBalanceText and maxBalanceText then
+            balance = parseAmount(currentBalanceText)
+            maxBalance = parseAmount(maxBalanceText)
+        end
+
+        -- Убирает баланс
+        local metadata = value:gsub("%s*%([^%)]*/[^%)]*%)%s*$", ""):match("^%s*(.-)%s*$")
+
+        local city = ""
+        local tax = nil
+        local cycles = 0
+
+        local cityText, taxText, cyclesText = metadata:match("^(.-)%s+([%d%.]+)%s+(%d+)%s+циклов%s*$")
+
+        if cityText and taxText and cyclesText then
+            city = trim(cityText)
+            tax = parseAmount(taxText)
+            cycles = tonumber(cyclesText) or 0
+
+            return city, tax, cycles, balance, maxBalance
+        end
+
+        cityText, cyclesText = metadata:match("^(.-)%s+(%d+)%s+циклов%s*$")
+
+        if cityText and cyclesText then
+            city = trim(cityText)
+            cycles = tonumber(cyclesText) or 0
+
+            return city, tax, cycles, balance, maxBalance
+        end
+        city = trim(metadata)
+
+        return city, tax, cycles, balance, maxBalance
+    end
+
+    -- Создаёт первоначальный статус дома, если этот дом
+    -- ещё никогда не встречался
+    local function ensureHouseStatus(house)
+        data.houseStatuses = data.houseStatuses or {}
+
+        if data.houseStatuses[house.house_number] then
+            return
+        end
+
+        local warningBalance = tonumber(cfg.minBalanceWarning) or 5000000
+
+        data.houseStatuses[house.house_number] = {
+            status = house.balance < warningBalance and "warning" or "good",
+
+            lastCheck = 0,
+            needsAttention = false,
+            lastBalance = house.balance
+        }
+    end
+
+    -- Разбирает одну строку списка домов.
+    local function parseHouseLine(line)
+        local listIndex, houseNumber = line:match("%[(%d+)%]%s+Дом%s+№(%d+)")
+
+        if not listIndex or not houseNumber then
+            return nil
+        end
+
+        local details = line:match("Дом%s+№%d+%s+(.+)") or ""
+
+        local city, tax, cycles, balance, maxBalance = parseHouseDetails(details)
+
+        return {
+            index = tonumber(listIndex),
+
+            name = "Дом №" .. houseNumber,
+            house_number = tonumber(houseNumber),
+
+            city = city,
+            tax = tax,
+            cycles = cycles,
+
+            balance = balance,
+            max_balance = maxBalance,
+            raw_line = line
+        }
+    end
+
+    -- Разбирает весь текст диалога Flashminer
     local function parseList(text)
-        data.dialogData.flashminer = {}
+        local houses = {}
 
-        local function parseAmount(str)
-            if not str then
-                return 0
+        for line in tostring(text or ""):gmatch("[^\r\n]+") do
+            local house = parseHouseLine(line)
+
+            if house then
+                houses[#houses + 1] = house
+                ensureHouseStatus(house)
             end
-            str = str:match("^%s*(.-)%s*$")
-
-            local cash = str:match(":CASH:([%d%.]+)")
-            if cash then
-                return tonumber((cash:gsub("%.", ""))) or 0
-            end
-
-            local kk, k = str:match(":KK:%s*([%d%.]+)%s+:K:%s*([%d%.]+)")
-            if kk and k then
-                return math.floor(tonumber((kk:gsub("%.", ""))) * 1e6 + tonumber((k:gsub("%.", ""))))
-            end
-
-            kk = str:match(":KK:%s*([%d%.]+)")
-            if kk then
-                return math.floor(tonumber((kk:gsub("%.", ""))) * 1e6)
-            end
-
-            k = str:match(":K:%s*([%d%.]+)")
-            if k then
-                return tonumber((k:gsub("%.", ""))) or 0
-            end
-
-            return tonumber((str:gsub("[%.%s]", ""))) or 0
         end
 
-        for line in text:gmatch("[^\r\n]+") do
-            if line:find("Номер дома") or line:find("Город") or line:find("Налог") then
-                goto continue
-            end
+        data.dialogData.flashminer = houses
 
-            local list_id, house_num = line:match("%[(%d+)%]%s+Дом №(%d+)")
-            if not (list_id and house_num) then
-                goto continue
-            end
+        state.revision = state.revision + 1
+        state.lastParseTime = os.clock()
 
-            local after_num = (line:match("Дом №%d+%s+(.+)") or ""):gsub("{%w+}", ""):gsub("%[%x%x%x%x%x%x%]", "")
-            local parts = {}
-            for w in after_num:gmatch("%S+") do
-                table.insert(parts, w)
-            end
-
-            local city, tax, cycles, balance, max_balance = "", nil, 0, 0, 0
-            local cycles_index = nil
-            for i, part in ipairs(parts) do
-                cycles_index = part == "циклов" and i or cycles_index
-                if cycles_index then
-                    break
-                end
-            end
-
-            if cycles_index then
-                cycles = tonumber(parts[cycles_index - 1]) or 0
-                tax = tonumber(parts[cycles_index - 2])
-                local city_end = tax and (cycles_index - 3) or (cycles_index - 2)
-                if city_end >= 1 then
-                    city = table.concat({table.unpack(parts, 1, city_end)}, " ")
-                else
-                    city = ""
-                end
-
-                local bal_paren = after_num:match("%(([^%)]+)%)")
-                if bal_paren then
-                    local left_str, right_str = bal_paren:match("^(.-)%s*/%s*(.-)$")
-                    balance = parseAmount(left_str)
-                    max_balance = parseAmount(right_str)
-                end
-            end
-
-            local house_data = {
-                index = tonumber(list_id),
-                name = "Дом №" .. house_num,
-                house_number = tonumber(house_num),
-                city = city,
-                tax = tax,
-                cycles = cycles,
-                balance = balance,
-                max_balance = max_balance,
-                raw_line = line
-            }
-
-            table.insert(data.dialogData.flashminer, house_data)
-            if not data.houseStatuses then
-                data.houseStatuses = {}
-            end
-            if not data.houseStatuses[house_data.house_number] then
-                data.houseStatuses[house_data.house_number] = {
-                    status = balance < 5000000 and "warning" or "good",
-                    lastCheck = 0,
-                    needsAttention = false,
-                    lastBalance = balance
-                }
-            end
-
-            ::continue::
-        end
+        return houses
     end
 
     function self.parseDialogText(text)
-        parseList(text)
+        local houses = parseList(text)
+
+        return #houses > 0, houses
     end
 
+    -- Запрашивает новый список через /flashminer
     function self.requestList(timeoutMs, cancelCheckFn)
-        timeoutMs = timeoutMs or 5000
-        data.dialogData.flashminer = {}
+        timeoutMs = math.max(0, tonumber(timeoutMs) or 5000)
+
+        local initialRevision = state.revision
+        local deadline = os.clock() + timeoutMs / 1000
+
         sampSendChat("/flashminer")
-        wait(200)
-        local t = 0
-        while #data.dialogData.flashminer == 0 and t < timeoutMs do
-            wait(200);
-            t = t + 200
+
+        repeat
+            wait(50)
+
+            if state.revision ~= initialRevision then
+                return #data.dialogData.flashminer > 0
+            end
+
+            -- Сервер сообщил, что Flashminer отсутствует.
             if data.hasFlashminer == false then
                 return false
             end
+
+            -- Внешняя отмена, например остановка автосбора.
             if cancelCheckFn and cancelCheckFn() then
                 return false
             end
-        end
-        return #data.dialogData.flashminer > 0
+        until os.clock() >= deadline
+
+        utils.debugChat("[FLASHMINER] Таймаут ожидания списка домов.")
+
+        return false
     end
 
+    -- Переключает текущий дом в окне Flashminer.
     function self.navigate(direction)
         if data.working then
-            return
+            return false
         end
+
+        direction = tonumber(direction)
+
+        if direction ~= -1 and direction ~= 1 then
+            return false
+        end
+
+        local dialogId = tonumber(data.dFlashminerId) or 0
+
+        if dialogId <= 0 then
+            utils.debugChat("[FLASHMINER] Неизвестен ID активного диалога.")
+
+            return false
+        end
+
         data.flashminerSwitchId.direction = direction
-        data.flashminerSwitchId.id = data.dFlashminerId
-        sampSendDialogResponse(data.dFlashminerId, 0, -1, "")
+        data.flashminerSwitchId.id = dialogId
+
+        sampSendDialogResponse(dialogId, 0, -1, "")
+
+        return true
     end
 
+    -- Возвращает актуальный массив домов.
     function self.getHouses()
         return data.dialogData.flashminer
     end
@@ -1459,7 +1660,10 @@ local flashminerTool = (function()
     end
 
     function self.isOpen()
-        return data.isFlashminer
+        return data.isFlashminer == true
+    end
+    function self.getLastParseTime()
+        return state.lastParseTime
     end
 
     return self
@@ -1504,7 +1708,8 @@ local taskState = (function()
     local self = {}
     local SUPPRESS_TAIL_SEC = 0.5
     function self.refreshSuppressDialogs()
-        data.suppressDialogs = data.working or data.silentWindowOpen or (os.clock() < (data.suppressDialogsUntil or 0))
+        data.suppressDialogs = data.working or data.backgroundSessionActive or
+                                   (os.clock() < (data.suppressDialogsUntil or 0))
     end
 
     function self.setWorking(state)
@@ -1515,11 +1720,11 @@ local taskState = (function()
         self.refreshSuppressDialogs()
     end
 
-    function self.setSilent(state)
-        if data.silentWindowOpen and not state then
+    function self.setBackgroundSession(state)
+        if data.backgroundSessionActive and not state then
             data.suppressDialogsUntil = os.clock() + SUPPRESS_TAIL_SEC
         end
-        data.silentWindowOpen = state
+        data.backgroundSessionActive = state
         self.refreshSuppressDialogs()
     end
 
@@ -1768,7 +1973,7 @@ local improveTool = (function()
 
         local function done()
             utils.debugChat(string.format(
-                "[IMPROVE] Инвентарь обновлён: AZ=%d, Обычная=%d, видеокарт=%d.",
+                "[IMPROVE] Инвентарь обновлё: AZ=%d, Обычная=%d, видеокарт=%d.",
                 imp.oils.arizona, imp.oils.classic, #imp.cef.cards))
             syncVideoCards()
             imp.cef.probed = false
@@ -1835,6 +2040,12 @@ local improveTool = (function()
         s.attempts = 0
         s.success = 0
         s.fail = 0
+        s.performanceAttempts = 0
+        s.performanceSuccess = 0
+        s.performanceFail = 0
+        s.storageAttempts = 0
+        s.storageSuccess = 0
+        s.storageFail = 0
         s.oilsUsed = 0
         s.spent = 0
         s.lastReason = ""
@@ -1859,6 +2070,12 @@ local improveTool = (function()
                 attempts = s.attempts,
                 success = s.success,
                 fail = s.fail,
+                performanceAttempts = s.performanceAttempts or 0,
+                performanceSuccess = s.performanceSuccess or 0,
+                performanceFail = s.performanceFail or 0,
+                storageAttempts = s.storageAttempts or 0,
+                storageSuccess = s.storageSuccess or 0,
+                storageFail = s.storageFail or 0,
                 oils = s.oilsUsed,
                 spent = s.spent,
                 reason = s.lastReason,
@@ -1895,16 +2112,22 @@ local improveTool = (function()
         local fromLevel = tonumber(card and card.level or 0) or 0
         local price = 0
 
+        local isStorage = imp.useStorageUpgrade == true
         s.lastAttempt = {
-            isStorage = imp.useStorageUpgrade == true,
+            isStorage = isStorage,
             fromLevel = fromLevel,
             toLevel = fromLevel + 1
         }
+        if isStorage then
+            s.storageAttempts = (s.storageAttempts or 0) + 1
+        else
+            s.performanceAttempts = (s.performanceAttempts or 0) + 1
+        end
 
-        if not imp.useStorageUpgrade and fromLevel >= 1 and fromLevel <= 9 then
+        if not isStorage and fromLevel >= 1 and fromLevel <= 9 then
             s.attemptsByLevel[fromLevel] = (s.attemptsByLevel[fromLevel] or 0) + 1
         end
-        if not imp.useStorageUpgrade and fromLevel >= 1 and fromLevel <= 9 then
+        if not isStorage and fromLevel >= 1 and fromLevel <= 9 then
             price = tonumber(gpuImprovePriceByLevel[fromLevel]) or 0
             s.spent = (s.spent or 0) + price
             s.lastAttempt.spent = price
@@ -1913,7 +2136,9 @@ local improveTool = (function()
         local slot = card and card.slot
         if slot then
             s.cards = s.cards or {}
-            local c = s.cards[slot]
+            local cardKey = (isStorage and "storage:" or "performance:") .. tostring(slot)
+            s.lastAttempt.cardKey = cardKey
+            local c = s.cards[cardKey]
             if not c then
                 c = {
                     slot = slot,
@@ -1923,13 +2148,12 @@ local improveTool = (function()
                     success = 0,
                     spent = 0,
                     oils = 0,
-                    isStorage = imp.useStorageUpgrade == true
+                    isStorage = isStorage
                 }
-                s.cards[slot] = c
+                s.cards[cardKey] = c
             end
             c.attempts = c.attempts + 1
             c.spent = c.spent + price
-            s.currentCardSlot = slot
 
             local pending = imp.pendingOilsUsed or 0
             if pending > 0 then
@@ -2016,13 +2240,21 @@ local improveTool = (function()
         end
 
         local s = imp.stats
+        local lastAttempt = s.lastAttempt
+        local statCard = lastAttempt and lastAttempt.cardKey and s.cards[lastAttempt.cardKey] or nil
+        local resultIsStorage = lastAttempt and lastAttempt.isStorage == true or
+                                    (lastAttempt == nil and imp.useStorageUpgrade == true)
 
-        if imp.useStorageUpgrade then
+        if resultIsStorage then
             if success then
                 card.storageUpgrade = true
                 imp.cef.knownStorage[card.slot] = true
                 if data.improve.storageQueue then
                     data.improve.storageQueue[card.slot] = nil
+                end
+                if statCard then
+                    statCard.success = (statCard.success or 0) + 1
+                    statCard.endLevel = card.level or statCard.endLevel
                 end
             end
         else
@@ -2046,11 +2278,9 @@ local improveTool = (function()
                 if s.active then
                     s.byLevel = s.byLevel or {}
                     s.byLevel[newLvl] = (s.byLevel[newLvl] or 0) + 1
-                    s.cards = s.cards or {}
-                    local c = s.cards[card.slot]
-                    if c then
-                        c.endLevel = newLvl
-                        c.success = (c.success or 0) + 1
+                    if statCard then
+                        statCard.endLevel = newLvl
+                        statCard.success = (statCard.success or 0) + 1
                     end
                 end
             end
@@ -2065,8 +2295,18 @@ local improveTool = (function()
         if s.active then
             if success then
                 s.success = (s.success or 0) + 1
+                if resultIsStorage then
+                    s.storageSuccess = (s.storageSuccess or 0) + 1
+                else
+                    s.performanceSuccess = (s.performanceSuccess or 0) + 1
+                end
             else
                 s.fail = (s.fail or 0) + 1
+                if resultIsStorage then
+                    s.storageFail = (s.storageFail or 0) + 1
+                else
+                    s.performanceFail = (s.performanceFail or 0) + 1
+                end
             end
             s.lastAttempt = nil
         end
@@ -2081,6 +2321,11 @@ local improveTool = (function()
             return
         end
         s.fail = (s.fail or 0) + 1
+        if s.lastAttempt and s.lastAttempt.isStorage then
+            s.storageFail = (s.storageFail or 0) + 1
+        else
+            s.performanceFail = (s.performanceFail or 0) + 1
+        end
         s.lastAttempt = nil
     end
 
@@ -2803,7 +3048,6 @@ local coolantTool = (function()
             end
             data.stopAction = false
             data.stopBySystem = false
-            wait(300)
         end
         return fillAttempted
     end
@@ -2872,16 +3116,30 @@ end)()
 local taxTool = (function()
     local self = {}
     local state = {
-        capturedAmount = 0
+        capturedAmount = 0,
+        confirmationHandled = false
     }
 
     function self.handleShowDialog(dialogId, style, title, button1, button2, text, placeholder)
-        if (title or ''):find("Оплата всех налогов") and (text or ''):find("нет налогов") and
-            data.taskTypeNow == 'autoPayTaxes' then
+        if dialogId == dialogIdTable.payAllTaxesDialogId and data.taskTypeNow == 'autoPayTaxes' then
             sampSendDialogResponse(dialogId, 1, 0, "")
+            state.confirmationHandled = true
             return true
         end
         return false
+    end
+
+    function self.beginPayment()
+        state.confirmationHandled = false
+    end
+
+    function self.waitForConfirmation(timeoutMs)
+        local waited = 0
+        while not state.confirmationHandled and waited < (timeoutMs or 5000) do
+            wait(50)
+            waited = waited + 50
+        end
+        return state.confirmationHandled
     end
 
     function self.handleServerMessage(color, text)
@@ -2914,7 +3172,7 @@ local taxTool = (function()
         if (cfg.lastTaxPayTime + cfg.autoPayTaxesInterval * 3600) > now then
             return
         end
-        runSilentTask('autoPayTaxes')
+        runBackgroundFlashminerTask('autoPayTaxes')
     end
 
     function self.runWithCollect()
@@ -2927,7 +3185,6 @@ local taxTool = (function()
         end
         local taxTask = buildTaskTable('autoPayTaxes')
         taxTask:run()
-        wait(500)
         while data.working do
             wait(200)
         end
@@ -2963,7 +3220,7 @@ local autoTopUpTool = (function()
         end
 
         if cfg.autoTopUpByTimer and (cfg.lastAutoTopUpTime + cfg.autoTopUpTimerInterval * 3600) <= now then
-            runSilentTask('autoTopUp')
+            runBackgroundFlashminerTask('autoTopUp')
             return
         end
 
@@ -2971,7 +3228,7 @@ local autoTopUpTool = (function()
             state.lastThresholdCheckAt = now
             for _, house in ipairs(data.dialogData.flashminer) do
                 if houseFilter.shouldProcess(house) and house.balance < cfg.autoTopUpThreshold then
-                    runSilentTask('autoTopUp')
+                    runBackgroundFlashminerTask('autoTopUp')
                     return
                 end
             end
@@ -2989,7 +3246,6 @@ local autoTopUpTool = (function()
         if flashminerTool.requestList(5000) then
             local topUpTask = buildTaskTable('autoTopUp')
             topUpTask:run()
-            wait(500)
             while data.working do
                 wait(200)
             end
@@ -3006,15 +3262,8 @@ local autoRefreshTool = (function()
         postponedUntil = 0
     }
 
-    function self.runSilent()
-        local result = withSilentFlashminer(function()
-            local updateTask = buildTaskTable('updateStatuses')
-            updateTask:run()
-            wait(300)
-            while data.working do
-                wait(200)
-            end
-        end)
+    function self.runBackground()
+        local result = runBackgroundFlashminerTask('updateStatuses')
         cfg.lastAutoRefreshTime = os.time()
         save()
         if result then
@@ -3034,13 +3283,14 @@ local autoRefreshTool = (function()
             return
         end
 
-        if cfg.refreshPostponeOnDialog and sampIsDialogActive() and not data.silentWindowOpen then
+        if cfg.refreshPostponeOnDialog and (sampIsDialogActive() or data.main[0] or data.showHouseControlWindow[0]) and
+            not data.backgroundSessionActive then
             state.postponedUntil = now + cfg.refreshPostponeMinutes * 60
             utils.debugChat(string.format(
                 "[REFRESH] Диалог открыт — обновление отложено на %d мин.",
                 cfg.refreshPostponeMinutes))
         else
-            self.runSilent()
+            self.runBackground()
         end
     end
 
@@ -3151,7 +3401,7 @@ local collectTool = (function()
             data.notifyWindow.isPreview = false
             data.notifyWindow.show[0] = true
         end
-        self.runSilent(true)
+        self.runBackground(true)
     end
 
     -- Тик одного триггера
@@ -3194,7 +3444,8 @@ local collectTool = (function()
         end
 
         if secsLeft <= 0 and not data.pendingCollectLocked and now - cfg.lastCollectTime > trig.fireThrottleSec() then
-            if cfg.refreshPostponeOnDialog and sampIsDialogActive() and not data.silentWindowOpen then
+            if cfg.refreshPostponeOnDialog and (sampIsDialogActive() or data.main[0] or data.showHouseControlWindow[0]) and
+                not data.backgroundSessionActive then
                 cfg.lastCollectTime = cfg.lastCollectTime + 60
                 utils.debugChat(string.format(
                     "[%s] Диалог открыт — автосбор отложен на 1 мин.",
@@ -3235,12 +3486,12 @@ local collectTool = (function()
         end
     end
 
-    function self.runSilent(doUpdateStatuses)
+    function self.runBackground(doUpdateStatuses)
         if data.hasFlashminer == false then
             return false
         end
         local restoreHouseControl = data.showHouseControlWindow[0] == true
-        data.silentWindowOpen = true
+        taskState.setBackgroundSession(true)
         data.showLogsWindow[0] = false
         data.showSettingsWindow[0] = false
         data.dialogData.flashminer = {}
@@ -3252,12 +3503,12 @@ local collectTool = (function()
             t = t + 200
             if data.collectCancelled then
                 data.collectCancelled = false
-                taskState.setSilent(false)
+                taskState.setBackgroundSession(false)
                 return false
             end
         end
         if #data.dialogData.flashminer == 0 then
-            data.silentWindowOpen = false
+            taskState.setBackgroundSession(false)
             data.notifyWindow.show[0] = false
             return false
         end
@@ -3274,36 +3525,33 @@ local collectTool = (function()
             if needsUpdate then
                 local updateTask = buildTaskTable('updateStatuses')
                 updateTask:run()
-                wait(300)
                 while data.working do
                     wait(200)
                     if data.collectCancelled then
                         data.collectCancelled = false
-                        taskState.setSilent(false)
+                        taskState.setBackgroundSession(false)
                         data.stopAction = true
                         return false
                     end
                 end
             end
         end
-        wait(300)
         while data.working do
             wait(200)
             if data.collectCancelled then
                 data.collectCancelled = false
-                taskState.setSilent(false)
+                taskState.setBackgroundSession(false)
                 data.stopAction = true
                 return false
             end
         end
         local task = buildTaskTable('collectFromAllHouses')
         task:run()
-        wait(500)
         while data.working do
             wait(200)
             if data.collectCancelled then
                 data.collectCancelled = false
-                taskState.setSilent(false)
+                taskState.setBackgroundSession(false)
                 data.stopAction = true
                 return false
             end
@@ -3313,7 +3561,6 @@ local collectTool = (function()
             if flashminerTool.requestList(5000) then
                 local switchTask = buildTaskTable('massSwitchCards')
                 switchTask:run(true)
-                wait(500)
                 while data.working do
                     wait(200)
                 end
@@ -3325,7 +3572,7 @@ local collectTool = (function()
 
         fixI()
         data.currentCollectHouse = ""
-        data.silentWindowOpen = false
+        taskState.setBackgroundSession(false)
         data.showHouseControlWindow[0] = restoreHouseControl
         data.notifyWindow.show[0] = false
         return true
@@ -3373,502 +3620,6 @@ local collectTool = (function()
             st.countdownNotified = false
             st.pendingNotified = false
         end
-    end
-
-    return self
-end)()
-
--- Помощь
-local helpTool = (function()
-    local self = {}
-
-    local function openWindow(setter)
-        setter()
-    end
-
-    local function gotoSettings(tab, subTab)
-        data.showSettingsWindow[0] = true
-        data.settingsTab = tab
-        if subTab ~= nil then
-            data.cheatSubTab = subTab
-        end
-    end
-
-    local function actionBtn(icon, label, id, onClick)
-        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.15, 0.22, 0.35, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.25, 0.40, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.20, 0.28, 0.45, 1))
-        if imgui.Button(icon .. "  " .. u8(label) .. "##help_" .. id, imgui.ImVec2(-1, 28)) then
-            onClick()
-        end
-        imgui.PopStyleColor(3)
-    end
-
-    local function bullet(text)
-        imgui.Text(fa.CARET_RIGHT)
-        imgui.SameLine(0, 6)
-        imgui.TextColoredRGB(text)
-    end
-
-    local function example(id, height, text)
-        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.12, 0.13, 0.09, 1))
-        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.35, 0.32, 0.12, 1))
-        imgui.BeginChild("##helpex_" .. id, imgui.ImVec2(0, height), true, imgui.WindowFlags.NoResize +
-            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-        imgui.TextColoredRGB("{FFE133} Пример")
-        imgui.TextColoredRGB(text)
-        imgui.EndChild()
-        imgui.PopStyleColor(2)
-    end
-
-    local function section(icon, title)
-        imgui.Text(icon)
-        imgui.SameLine(0, 6)
-        imgui.TextColoredRGB("{87CEFA}" .. title)
-        imgui.Spacing()
-    end
-
-    local setupPages = {{
-        title = "Добро пожаловать",
-        render = function()
-            section(fa.HOUSE, "Первоначальная настройка")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Mining Tools — помощник для майнинг-ферм:\n{C0C0C0}сбор крипты, включение карт, пополнение баланса,\n{C0C0C0}заточка и статистика.")
-            imgui.Spacing()
-            imgui.TextColoredRGB(
-                "{FFFFFF}Пройдём пару базовых настроек. Полное описание\n{C0C0C0}всех функций потом будет в Настройки, вкладка «Помощь».")
-            imgui.Spacing()
-            imgui.TextColoredRGB(
-                "{FF6B6B}ВНИМАНИЕ: автоматизация может быть запрещена\n{FF6B6B}на вашем сервере. Уточните правила и используйте\n{FF6B6B}на свой риск.")
-            imgui.Spacing()
-            imgui.TextColoredRGB(
-                "{87CEFA}Команды: {FFFFFF}/fls {808080}— окно, {FFFFFF}/mnt {808080}— вкл/выкл.")
-        end
-    }, {
-        title = "Целевой баланс",
-        render = function()
-            section(fa.COINS, "Целевой баланс домов")
-            imgui.TextColoredRGB(
-                "{FFFFFF}До какой суммы пополнять баланс дома при\n{C0C0C0}пополнении. Чем выше — тем реже пополнять.")
-            imgui.Spacing()
-            imgui.TextColoredRGB("{87CEFA}Целевой баланс:")
-            imgui.PushItemWidth(-1)
-            if imgui.SliderInt("##setBal", imcfg.targetHouseBalance, 5000000, 60000000,
-                u8("$" .. utils.formatNumber(imcfg.targetHouseBalance[0]))) then
-                local v = math.floor(imcfg.targetHouseBalance[0] / 100000 + 0.5) * 100000
-                cfg.targetHouseBalance = v;
-                imcfg.targetHouseBalance[0] = v;
-                save()
-            end
-            imgui.PopItemWidth()
-            imgui.Spacing()
-            example("setbal", 80,
-                "{C0C0C0}$20.000.000 — баланс каждого дома будет\n{C0C0C0}доводиться до 20 млн при пополнении.")
-        end
-    }, {
-        title = "Скорость диалогов",
-        render = function()
-            section(fa.CLOCK, "Скорость диалогов")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Как быстро скрипт взаимодействует с диалогами.\n{C0C0C0}Меньше пауза = быстрее, но при лагах сервера\n{C0C0C0}может кикать.")
-            imgui.Spacing()
-            imgui.PushItemWidth(-1)
-            if imgui.SliderInt("##setPause", imcfg.pause_duration, 150, 300, u8 "%d мс") then
-                cfg.pause_duration = imcfg.pause_duration[0];
-                save()
-            end
-            if imgui.SliderInt("##setCount", imcfg.count_action, 1, 20,
-                u8(string.format("пауза каждые %d", imcfg.count_action[0]))) then
-                cfg.count_action = imcfg.count_action[0];
-                save()
-            end
-            imgui.PopItemWidth()
-            imgui.Spacing()
-            example("setspeed", 100,
-                "{C0C0C0}Хороший пинг и фпс — 230 мс. Если начинает\n{C0C0C0}кикать античит — поднимите до 250-300 мс. \n{C0C0C0}Рекомендованные значения 250 - 8.")
-        end
-    }, {
-        title = "Автоматизация стойки",
-        render = function()
-            section(fa.DROPLET, "Автоматизация стойки")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Что делать, когда вы вручную открываете стойку\n{C0C0C0}видеокарт в доме.")
-            imgui.Spacing()
-            if imgui.Checkbox(u8 "Авто-заливка жидкости при открытии стойки",
-                imcfg.fixCoolantEnabled) then
-                cfg.fixCoolantEnabled = imcfg.fixCoolantEnabled[0];
-                save()
-            end
-            imgui.Hint(
-                "Доливать охлаждающую жидкость сразу при открытии стойки.")
-            if imgui.Checkbox(u8 "Авто-включение карт при открытии стойки",
-                imcfg.autoEnableCardsOnOpen) then
-                cfg.autoEnableCardsOnOpen = imcfg.autoEnableCardsOnOpen[0]
-                if cfg.autoEnableCardsOnOpen then
-                    cfg.autoEnableCards = false;
-                    imcfg.autoEnableCards[0] = false
-                end
-                save()
-            end
-            imgui.Hint(
-                "Включать выключенные карты сразу при открытии стойки.")
-        end
-    }, {
-        title = "Готово",
-        render = function()
-            section(fa.CIRCLE_CHECK, "Базовая настройка завершена")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Этого достаточно для старта. Остальные функции\n{C0C0C0}(заточка, авто-функции, уведомления, фильтры)\n{C0C0C0}настраиваются в любой момент.")
-            imgui.Spacing()
-            imgui.TextColoredRGB(
-                "{87CEFA}Полное описание всех возможностей — в\n{87CEFA}Настройки, вкладка «Помощь».\n{C0C0C0}Кнопка настроек находится в правом верхнем углу, рядом с кнопкой закрыть.")
-            imgui.Spacing()
-            actionBtn(fa.CIRCLE_QUESTION, "Открыть полную справку", "tohelp", function()
-                data.helpPage = 1
-                data.helpWindowMode = 'reference'
-            end)
-        end
-    }}
-
-    local refPages = {{
-        title = "Обзор",
-        render = function()
-            section(fa.HOUSE, "Mining Tools")
-            imgui.TextColoredRGB("{FFFFFF}Помощник для управления майнинг-фермами.")
-            bullet("{C0C0C0}сбор крипты и включение видеокарт")
-            bullet("{C0C0C0}пополнение баланса и оплата налогов")
-            bullet("{C0C0C0}заточка карт и подробная статистика")
-            imgui.Spacing()
-            imgui.TextColoredRGB("{87CEFA}Команды:")
-            bullet("{FFFFFF}/fls {808080}— открыть/закрыть основное окно")
-            bullet("{FFFFFF}/mnt {808080}— включить/выключить скрипт")
-            bullet("{FFFFFF}/mntd {808080}— режим отладки")
-        end
-    }, {
-        title = "Основное окно",
-        render = function()
-            section(fa.HOUSE, "Основное окно")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Все дома показаны карточками. На карточке видны\n{C0C0C0}статус, баланс, налог, крипта, видеокарты и\n{C0C0C0}минимальный уровень охлаждающей жидкости.")
-            imgui.Spacing()
-            example("mainwin", 100,
-                "{C0C0C0}Красный баланс = деньги почти кончились, дом\n{C0C0C0}скоро встанет. Жёлтая жидкость = скоро нужна\n{C0C0C0}заливка.")
-        end
-    }, {
-        title = "Управление",
-        render = function()
-            section(fa.ARROW_UP_SHORT_WIDE, "Мышь и клавиатура")
-            bullet("{FFFFFF}ЛКМ по дому {808080}— зайти в него")
-            bullet("{FFFFFF}ПКМ по дому {808080}— меню (исключить и т.д.)")
-            bullet("{FFFFFF}Колесо {808080}— прокрутка списка")
-            imgui.Spacing()
-            imgui.TextColoredRGB("{87CEFA}Стрелки (когда открыто основное окно):")
-            bullet("{FFFFFF}влево / вправо {808080}— выбор соседней карты")
-            bullet("{FFFFFF}вверх / вниз {808080}— переход на строку")
-            bullet("{FFFFFF}Enter {808080}— зайти в выбранный дом")
-            imgui.Spacing()
-            example("nav", 80,
-                "{C0C0C0}Выбранный дом подсвечивается и сам\n{C0C0C0}прокручивается в зону видимости.")
-        end
-    }, {
-        title = "Поиск и сортировка",
-        render = function()
-            section(fa.ARROW_DOWN_WIDE_SHORT, "Поиск и сортировка")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Сверху окна — поиск по номеру/городу и фильтры\n{C0C0C0}(уровни карт, города, скрытые дома).")
-            imgui.Spacing()
-            imgui.TextColoredRGB("{87CEFA}Сортировка:")
-            bullet("{C0C0C0}выбираете поле (номер, баланс, охлаждение и т.д.)")
-            bullet(
-                "{C0C0C0}кнопка со стрелкой меняет порядок\n{C0C0C0}(по возрастанию / по убыванию)")
-            imgui.Spacing()
-        end
-    }, {
-        title = "Действия",
-        render = function()
-            section(fa.GEAR, "Кнопки действий")
-            bullet("{FFD700}Собрать {808080}— снять крипту со всех домов")
-            bullet("{87CEFA}Включить {808080}— включить все видеокарты")
-            bullet("{FF6B6B}Выключить {808080}— выключить все карты")
-            bullet("{FFA500}Обновить {808080}— обновить данные домов")
-            bullet(
-                "{00E600}Пополнить {808080}— пополнить баланс всех домов до целевого значения. \n{808080}Можно переключить в режим Авто-обслуживания, тогда при нажатии будет выполняться не просто пополнение, а набор действий, который настраивается на вкладке «Фермы».")
-            imgui.Spacing()
-            imgui.TextColoredRGB(
-                "{C788FF}Авто-обслуживание {808080}— выполняет выбранный\n{808080}набор действий сразу. Что именно — настраивается\n{808080}на вкладке «Фермы».")
-            imgui.Spacing()
-            actionBtn(fa.GEAR, "Настроить действия обслуживания", "cfgfix", function()
-                gotoSettings(1)
-            end)
-        end
-    }, {
-        title = "Подсказки",
-        render = function()
-            section(fa.CIRCLE_QUESTION, "Подсказки")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Почти у каждой настройки и кнопки есть подсказка.\n{C0C0C0}Наведите курсор на элемент — появится поясняющий текст.")
-            imgui.Spacing()
-            example("hint", 60,
-                "{C0C0C0}Наведите на этот текст-пример... у подсказок такой вид.")
-            imgui.Hint("Вот так выглядит подсказка при наведении.")
-        end
-    }, {
-        title = "Баланс домов",
-        render = function()
-            section(fa.COINS, "Целевой баланс домов")
-            imgui.TextColoredRGB(
-                "{FFFFFF}До какой суммы пополнять баланс дома при\n{C0C0C0}пополнении (кнопкой обслуживания или авто).")
-            imgui.Spacing()
-            imgui.PushItemWidth(-1)
-            if imgui.SliderInt("##refBal", imcfg.targetHouseBalance, 5000000, 60000000,
-                u8("$" .. utils.formatNumber(imcfg.targetHouseBalance[0]))) then
-                local v = math.floor(imcfg.targetHouseBalance[0] / 100000 + 0.5) * 100000
-                cfg.targetHouseBalance = v;
-                imcfg.targetHouseBalance[0] = v;
-                save()
-            end
-            imgui.PopItemWidth()
-            imgui.Spacing()
-            example("refbal", 80,
-                "{C0C0C0}$20.000.000 — баланс каждого дома будет\n{C0C0C0}доводиться до 20 млн при пополнении.")
-        end
-    }, {
-        title = "Заливка охлаждения",
-        render = function()
-            section(fa.DROPLET, "Как работает заливка")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Скрипт доливает охлаждающую жидкость в карты,\n{C0C0C0}у которых уровень упал ниже заданного порога.\n{C0C0C0}По умолчанию доливает до 100.\n{C0C0C0}Можно включить режим экономии, \n{C0C0C0}про него написано на следующей странице.")
-            imgui.Spacing()
-            bullet("{C0C0C0}порог заливки задаётся в настройках ферм")
-            bullet("{C0C0C0}карты выше порога не трогаются (экономия)")
-            imgui.Spacing()
-            example("fill", 80,
-                "{C0C0C0}Порог 30: карта на 25 будет долита,\n{C0C0C0}карта на 60 — нет.")
-        end
-    }, {
-        title = "Экономный режим",
-        render = function()
-            section(fa.DROPLET, "Режим экономии жидкости")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Экономит охлаждающую жидкость при заливке.\n{C0C0C0}Если после первой жидкости уровень охлаждения\n{C0C0C0}достигает 70 и выше — вторая не расходуется.")
-            imgui.Spacing()
-            bullet("{C0C0C0}работает только с обычными жидкостями")
-            bullet("{C0C0C0}не работает в Вайс-Сити и для суперохлаждающих")
-            bullet("{C0C0C0}без режима скрипт всегда заливает до 100%")
-            imgui.Spacing()
-            example("econ", 80,
-                "{C0C0C0}Одной жидкости хватило до 72 — режим\n{C0C0C0}остановится и не потратит вторую.")
-            imgui.Spacing()
-            actionBtn(fa.GEAR, "Открыть настройки ферм", "cfgecon", function()
-                gotoSettings(1)
-            end)
-        end
-    }, {
-        title = "Автоматизация стойки",
-        render = function()
-            section(fa.DROPLET, "Автоматизация стойки")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Что делать автоматически при ручном открытии\n{C0C0C0}стойки. {FF6B6B}Не работает через Флешку Майнера.")
-            imgui.Spacing()
-            if imgui.Checkbox(u8 "Авто-заливка жидкости при открытии стойки",
-                imcfg.fixCoolantEnabled) then
-                cfg.fixCoolantEnabled = imcfg.fixCoolantEnabled[0];
-                save()
-            end
-            imgui.Hint("Доливать жидкость сразу при открытии стойки.")
-            if imgui.Checkbox(u8 "Авто-включение карт при открытии стойки",
-                imcfg.autoEnableCardsOnOpen) then
-                cfg.autoEnableCardsOnOpen = imcfg.autoEnableCardsOnOpen[0]
-                if cfg.autoEnableCardsOnOpen then
-                    cfg.autoEnableCards = false;
-                    imcfg.autoEnableCards[0] = false
-                end
-                save()
-            end
-            imgui.Hint(
-                "Включать выключенные карты сразу при открытии стойки.")
-        end
-    }, {
-        title = "Скорость диалогов",
-        render = function()
-            section(fa.CLOCK, "Скорость диалогов")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Как быстро скрипт взаимодействует с диалогами.\n{C0C0C0}Меньше пауза = быстрее, но при лагах сервера\n{C0C0C0}может кикать.")
-            imgui.Spacing()
-            imgui.PushItemWidth(-1)
-            if imgui.SliderInt("##refPause", imcfg.pause_duration, 150, 300, u8 "%d мс") then
-                cfg.pause_duration = imcfg.pause_duration[0];
-                save()
-            end
-            if imgui.SliderInt("##refCount", imcfg.count_action, 1, 20,
-                u8(string.format("пауза каждые %d", imcfg.count_action[0]))) then
-                cfg.count_action = imcfg.count_action[0];
-                save()
-            end
-            imgui.PopItemWidth()
-        end
-    }, {
-        title = "Уведомления",
-        render = function()
-            section(fa.CIRCLE_EXCLAMATION, "Окно уведомлений")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Всплывающее окно (например, перед автосбором).\n{C0C0C0}Длительность настраивается ниже, позицию —\n{C0C0C0}через предпросмотр.")
-            imgui.Spacing()
-            imgui.PushItemWidth(-1)
-            if imgui.SliderInt("##refDur", imcfg.notifyShowDuration, 3, 30,
-                u8(string.format("показывать %d сек.", imcfg.notifyShowDuration[0]))) then
-                cfg.notifyShowDuration = imcfg.notifyShowDuration[0];
-                save()
-            end
-            imgui.PopItemWidth()
-            imgui.Spacing()
-            actionBtn(fa.WAND_MAGIC_SPARKLES, "Предпросмотр (перетащите для позиции)",
-                "prev", function()
-                    data.notifyWindow.btcAmount = 150
-                    data.notifyWindow.mode = 'reminder'
-                    data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
-                    data.notifyWindow.isPreview = true
-                    data.notifyWindow.show[0] = true
-                end)
-        end
-    }, {
-        title = "Заточка и логи",
-        render = function()
-            section(fa.WAND_MAGIC_SPARKLES, "Заточка карт")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Подойдите к месту заточки — появится плашка-\n{C0C0C0}подсказка. В окне заточки задаются параметры,\n{C0C0C0}а статистика по картам копится в Логах.")
-            imgui.Spacing()
-            actionBtn(fa.WAND_MAGIC_SPARKLES, "Открыть окно заточки", "openimp", function()
-                openWindow(function()
-                    data.showImproveWindow[0] = true
-                end)
-            end)
-            imgui.Spacing()
-            section(fa.CLOCK_ROTATE_LEFT, "Логи")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Общее — все события; По дням — за день;\n{C0C0C0}Заточка — статистика по картам. Сверху\n{C0C0C0}выбирается период.")
-            imgui.Spacing()
-            actionBtn(fa.CLOCK_ROTATE_LEFT, "Открыть логи", "openlogs", function()
-                openWindow(function()
-                    data.showLogsWindow[0] = true
-                end)
-            end)
-        end
-    }, {
-        title = "Авто-функции",
-        render = function()
-            section(fa.GEAR, "Авто-функции")
-            imgui.TextColoredRGB(
-                "{FFFFFF}Автосбор по расписанию, умный автосбор,\n{C0C0C0}налоги, пополнение баланса, фоновое\n{C0C0C0}обновление и уведомления — на вкладке «Авто».")
-            imgui.Spacing()
-            imgui.TextColoredRGB(
-                "{FF6B6B}ВНИМАНИЕ: авто-функции могут быть запрещены\n{FF6B6B}на вашем сервере. Используйте на свой риск.")
-            imgui.Spacing()
-            actionBtn(fa.GEAR, "Открыть настройки авто-функций", "cfgauto", function()
-                gotoSettings(2, 0)
-            end)
-        end
-    }, {
-        title = "Если что-то не так",
-        render = function()
-            section(fa.CIRCLE_EXCLAMATION, "Частые ситуации")
-            bullet("{FFD700}Не отсканировался подвал / ошибочно «без подвала»")
-            imgui.TextColoredRGB(
-                "{C0C0C0}Нажмите «Проверить подвалы» — все дома будут\n{C0C0C0}просканированы заново.")
-            imgui.Spacing()
-            bullet("{FFD700}Купили новый дом")
-            imgui.TextColoredRGB(
-                "{C0C0C0}Откройте основное окно (/fls): новые дома\n{C0C0C0}сканируются автоматически. Если нет —\n{C0C0C0}«Проверить подвалы».")
-            imgui.Spacing()
-            bullet("{FFD700}При «Обновить» обновились не все дома")
-            imgui.TextColoredRGB("{C0C0C0}Просто нажмите «Обновить» ещё раз.")
-            imgui.Spacing()
-            bullet("{FFD700}Действие зависло / прервалось")
-            imgui.TextColoredRGB(
-                "{C0C0C0}Дождитесь конца PayDay или перезапустите действие по новой.\n{C0C0C0}Пауза на PayDay позволяет избежать кика при пролаге сервера.")
-            imgui.Spacing()
-            actionBtn(fa.BOX_OPEN, "Проверить подвалы (пересканировать всё)",
-                "rescan", function()
-                    if not data.working then
-                        local task = buildTaskTable('scanBasements')
-                        data.showHelpWindow[0] = false
-                        data.showSettingsWindow[0] = false
-                        runTaskAndReopenDialog(function()
-                            task:run(nil)
-                        end)
-                    else
-                        utils.addChat("{F78181}Дождитесь завершения текущей операции.")
-                    end
-                end)
-        end
-    }}
-
-    local function pager(pages, pageKey, idPrefix)
-        local total = #pages
-        if data[pageKey] < 1 then
-            data[pageKey] = 1
-        end
-        if data[pageKey] > total then
-            data[pageKey] = total
-        end
-        local page = pages[data[pageKey]]
-
-        imgui.Text(fa.CIRCLE_QUESTION)
-        imgui.SameLine(0, 6)
-        imgui.TextColoredRGB(string.format("{FFFFFF}%s  {808080}(%d/%d)", page.title, data[pageKey], total))
-        imgui.Separator()
-        imgui.Spacing()
-
-        page.render()
-
-        imgui.Spacing()
-        imgui.Separator()
-        imgui.Spacing()
-        local availW = imgui.GetContentRegionAvail().x
-        local gap = imgui.GetStyle().ItemSpacing.x
-        local btnW = (availW - gap) / 2
-        local atStart = data[pageKey] <= 1
-        local atEnd = data[pageKey] >= total
-
-        if atStart then
-            imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.10, 0.10, 1))
-        end
-        if imgui.Button(fa.ARROW_LEFT .. "  " .. u8("Назад") .. "##" .. idPrefix .. "Prev", imgui.ImVec2(btnW, 30)) and
-            not atStart then
-            data[pageKey] = data[pageKey] - 1
-        end
-        if atStart then
-            imgui.PopStyleColor()
-        end
-
-        imgui.SameLine(0, gap)
-
-        if atEnd then
-            imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.10, 0.10, 0.10, 1))
-        end
-        if imgui.Button(u8("Далее") .. "  " .. fa.ARROW_RIGHT .. "##" .. idPrefix .. "Next", imgui.ImVec2(btnW, 30)) and
-            not atEnd then
-            data[pageKey] = data[pageKey] + 1
-        end
-        if atEnd then
-            imgui.PopStyleColor()
-        end
-    end
-
-    function self.pageCount()
-        return #refPages
-    end
-
-    function self.setupPageCount()
-        return #setupPages
-    end
-
-    function self.renderReference()
-        pager(refPages, 'helpPage', 'helpRef')
-    end
-
-    function self.renderSetup()
-        pager(setupPages, 'setupPage', 'helpSetup')
     end
 
     return self
@@ -3962,10 +3713,252 @@ function formatEarnings(btc, asc, includeAsc, separator)
     return table.concat(parts, separator), true
 end
 
-function isArizonaServer()
-    local serverName = sampGetCurrentServerName()
-    local isMatch = serverName:match("^Arizona [^|]+ | ([^|]+) |") or serverName:match("^Arizona [^|]+ | ([^|]+)$")
-    return isMatch ~= nil
+function buildMainMenuStatus()
+    local summary = {
+        good = 0,
+        warning = 0,
+        bad = 0,
+        unknown = 0,
+        totalCoolants = 0,
+        badIssues = {},
+        warningIssues = {}
+    }
+    local nearestMaintenanceHours = nil
+    local nearestMaintenanceHouse = nil
+
+    for _, house in ipairs(data.dialogData.flashminer) do
+        local status = data.houseStatuses[house.house_number]
+        if status then
+            summary.totalCoolants = summary.totalCoolants + (status.coolantsNeeded or 0)
+        end
+
+        if status and status.lastCheck > 0 then
+            local statusType = status.status or "unknown"
+            if summary[statusType] ~= nil then
+                summary[statusType] = summary[statusType] + 1
+            else
+                summary.unknown = summary.unknown + 1
+            end
+            if statusType == "bad" and status.issues and #status.issues > 0 then
+                summary.badIssues[house.house_number] = status.issues
+            elseif statusType == "warning" and status.issues and #status.issues > 0 then
+                summary.warningIssues[house.house_number] = status.issues
+            end
+        else
+            summary.unknown = summary.unknown + 1
+        end
+
+        if houseFilter.shouldProcess(house) and status and status.lastCheck > 0 and status.minCoolant and
+            status.minCoolant <= 100 then
+            local hours = utils.calculateRemainingHours(status.minCoolant)
+            if not nearestMaintenanceHours or hours < nearestMaintenanceHours then
+                nearestMaintenanceHours = hours
+                nearestMaintenanceHouse = house.house_number
+            end
+        end
+    end
+
+    local hintLines = {"{FFFFFF}Состояние домов:", "--------------------"}
+    local function appendIssues(title, issuesMap)
+        table.insert(hintLines, title)
+        for houseNum, issues in pairs(issuesMap) do
+            table.insert(hintLines, "  {FFA500}Дом №" .. houseNum .. ":")
+            for _, issue in ipairs(issues) do
+                table.insert(hintLines, "    • " .. issue)
+            end
+        end
+        table.insert(hintLines, "")
+    end
+
+    if next(summary.badIssues) ~= nil then
+        appendIssues(fa.CIRCLE_EXCLAMATION .. " {FF3333}Критические проблемы:", summary.badIssues)
+    end
+    if next(summary.warningIssues) ~= nil then
+        appendIssues(fa.TRIANGLE_EXCLAMATION .. " {FFE133}Требует внимания:", summary.warningIssues)
+    end
+    if next(summary.badIssues) == nil and next(summary.warningIssues) == nil then
+        table.insert(hintLines, fa.CIRCLE_CHECK .. " {4DE94C}Проблем не обнаружено.")
+        table.insert(hintLines, "")
+    end
+
+    table.insert(hintLines, "--------------------")
+    table.insert(hintLines,
+        string.format("{87CEFA}Нужно жидкости: {FFFFFF}%d шт.", summary.totalCoolants))
+    if nearestMaintenanceHouse and nearestMaintenanceHours then
+        table.insert(hintLines, "")
+        table.insert(hintLines,
+            string.format("{FFA500}Ближайшее обслуживание:\n{FFFFFF}~%dч — дом №%d",
+                math.floor(nearestMaintenanceHours), nearestMaintenanceHouse))
+    end
+    summary.hint = table.concat(hintLines, "\n")
+    return summary
+end
+
+local mainMenuTabs = {{
+    id = "houses",
+    label = "Дома",
+    icon = fa.HOUSE,
+    color = imgui.ImVec4(0.35, 0.70, 1.00, 1.00)
+}, {
+    id = "logs",
+    label = "Журнал",
+    icon = fa.CLOCK_ROTATE_LEFT,
+    color = imgui.ImVec4(1.00, 0.72, 0.25, 1.00)
+}, {
+    id = "settings",
+    label = "Настройки",
+    icon = fa.GEAR,
+    color = imgui.ImVec4(0.72, 0.48, 1.00, 1.00)
+}}
+
+local mainMenuTabAnimation = {
+    offsetY = nil,
+    lastTime = 0
+}
+
+function selectMainMenuTab(tab)
+    data.mainMenuTab = tab or "houses"
+    data.showHouseControlWindow[0] = true
+    data.showLogsWindow[0] = false
+    data.showSettingsWindow[0] = false
+end
+
+function renderMainMenuSection(contentRenderer)
+    applyStyle()
+    local sw, sh = getScreenResolution()
+    local width = math.min(1180, math.max(720, sw - 40))
+    local height = math.min(700, math.max(520, sh - 40))
+    imgui.SetNextWindowSize(imgui.ImVec2(width, height), imgui.Cond.Always)
+    imgui.SetNextWindowPos(imgui.ImVec2(sw / 2, sh / 2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5, 0.5))
+    if imgui.Begin(u8 "Mining Tools##MainWin", data.showHouseControlWindow,
+        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize +
+            imgui.WindowFlags.NoScrollbar) then
+        imgui.customTitleBar(data.showHouseControlWindow, resetDefaultCfg, imgui.GetWindowWidth())
+        local style = imgui.GetStyle()
+        local sidebarHeight = imgui.GetContentRegionAvail().y
+        local windowBg = style.Colors[imgui.Col.WindowBg]
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(windowBg.x, windowBg.y, windowBg.z, windowBg.w))
+        imgui.BeginChild("##main_menu_sidebar", imgui.ImVec2(180, sidebarHeight), false,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        imgui.PopStyleColor()
+
+        local tabHeight = 38
+        local tabStart = imgui.GetCursorScreenPos()
+        local tabWidth = imgui.GetContentRegionAvail().x
+        local selectedTabIndex = 1
+        for i, tab in ipairs(mainMenuTabs) do
+            if data.mainMenuTab == tab.id then
+                selectedTabIndex = i
+                break
+            end
+        end
+
+        local targetOffsetY = (selectedTabIndex - 1) * (tabHeight + style.ItemSpacing.y)
+        local now = os.clock()
+        local delta = mainMenuTabAnimation.lastTime > 0 and math.min(now - mainMenuTabAnimation.lastTime, 0.05) or 0
+        mainMenuTabAnimation.lastTime = now
+        if mainMenuTabAnimation.offsetY == nil then
+            mainMenuTabAnimation.offsetY = targetOffsetY
+        else
+            local blend = 1 - math.exp(-delta * 14)
+            mainMenuTabAnimation.offsetY =
+                mainMenuTabAnimation.offsetY + (targetOffsetY - mainMenuTabAnimation.offsetY) * blend
+            if math.abs(mainMenuTabAnimation.offsetY - targetOffsetY) < 0.1 then
+                mainMenuTabAnimation.offsetY = targetOffsetY
+            end
+        end
+
+        local maxOffsetY = (#mainMenuTabs - 1) * (tabHeight + style.ItemSpacing.y)
+        mainMenuTabAnimation.offsetY = math.max(0, math.min(maxOffsetY, mainMenuTabAnimation.offsetY))
+        local highlightY = tabStart.y + mainMenuTabAnimation.offsetY
+        local navDrawList = imgui.GetWindowDrawList()
+        navDrawList:AddRectFilled(imgui.ImVec2(tabStart.x, highlightY),
+            imgui.ImVec2(tabStart.x + tabWidth, highlightY + tabHeight),
+            imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.16, 0.40, 0.72, 0.68)), style.FrameRounding)
+
+        for _, tab in ipairs(mainMenuTabs) do
+            local active = data.mainMenuTab == tab.id
+            local pos = imgui.GetCursorScreenPos()
+            if imgui.InvisibleButton("##main_tab_" .. tab.id, imgui.ImVec2(tabWidth, tabHeight)) then
+                selectMainMenuTab(tab.id)
+            end
+
+            if imgui.IsItemHovered() and not active then
+                navDrawList:AddRectFilled(pos, imgui.ImVec2(pos.x + tabWidth, pos.y + tabHeight),
+                    imgui.ColorConvertFloat4ToU32(style.Colors[imgui.Col.FrameBg]), style.FrameRounding)
+            end
+
+            local text = u8(tab.label)
+            local iconSize = imgui.CalcTextSize(tab.icon)
+            local textSize = imgui.CalcTextSize(text)
+            local totalWidth = iconSize.x + 8 + textSize.x
+            local startX = pos.x + (tabWidth - totalWidth) / 2
+            local textY = pos.y + (tabHeight - textSize.y) / 2
+            local textColor = active and style.Colors[imgui.Col.Text] or style.Colors[imgui.Col.TextDisabled]
+            navDrawList:AddText(imgui.ImVec2(startX, pos.y + (tabHeight - iconSize.y) / 2),
+                imgui.ColorConvertFloat4ToU32(tab.color), tab.icon)
+            navDrawList:AddText(imgui.ImVec2(startX + iconSize.x + 8, textY), imgui.ColorConvertFloat4ToU32(textColor),
+                text)
+        end
+
+        local status = buildMainMenuStatus()
+        local statusHeight = 30
+        local versionHeight = imgui.GetTextLineHeight()
+        local statusY = imgui.GetWindowHeight() - statusHeight - versionHeight - 4 - style.WindowPadding.y
+        if imgui.GetCursorPosY() < statusY then
+            imgui.SetCursorPosY(statusY)
+        end
+        imgui.BeginChild("##main_menu_status", imgui.ImVec2(-1, statusHeight), true,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+
+        local statusParts = {}
+        if status.good > 0 then
+            table.insert(statusParts, string.format("{4DE94C}%d", status.good))
+        end
+        if status.warning > 0 then
+            table.insert(statusParts, string.format("{FFE133}%d", status.warning))
+        end
+        if status.bad > 0 then
+            table.insert(statusParts, string.format("{FF3333}%d", status.bad))
+        end
+        local statusText = #statusParts > 0 and table.concat(statusParts, " {FFFFFF}/ ") or
+                               "{808080}Не проверено"
+        local statusClean = statusText:gsub("{%x%x%x%x%x%x}", "")
+        local statusLabel = u8 "Состояние:"
+        local statusWidth = imgui.CalcTextSize(fa.CHART_PIE).x + 12 + imgui.CalcTextSize(statusLabel).x +
+                                imgui.CalcTextSize(u8(statusClean)).x
+        imgui.SetCursorPosX(math.max(style.WindowPadding.x, (imgui.GetWindowWidth() - statusWidth) / 2))
+        imgui.SetCursorPosY((statusHeight - imgui.GetTextLineHeight()) / 2)
+        imgui.Text(fa.CHART_PIE)
+        imgui.SameLine(0, 6)
+        imgui.TextColoredRGB("{87CEFA}Состояние:")
+        imgui.SameLine(0, 6)
+        imgui.TextColoredRGB(statusText)
+        imgui.EndChild()
+        imgui.Hint(status.hint)
+
+        local versionText = u8("v" .. tostring(script.this.version or "?"))
+        imgui.SetCursorPosX((imgui.GetWindowWidth() - imgui.CalcTextSize(versionText).x) / 2)
+        imgui.TextDisabled(versionText)
+
+        imgui.EndChild()
+        imgui.SameLine(0, 8)
+        local separatorColor = style.Colors[imgui.Col.Separator]
+        imgui.PushStyleColor(imgui.Col.ChildBg,
+            imgui.ImVec4(separatorColor.x, separatorColor.y, separatorColor.z, separatorColor.w))
+        imgui.BeginChild("##main_menu_separator", imgui.ImVec2(1, sidebarHeight), false,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        imgui.EndChild()
+        imgui.PopStyleColor()
+
+        imgui.SameLine(0, 12)
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(windowBg.x, windowBg.y, windowBg.z, windowBg.w))
+        imgui.BeginChild("##main_menu_content", imgui.ImVec2(0, sidebarHeight), false)
+        imgui.PopStyleColor()
+        contentRenderer()
+        imgui.EndChild()
+        imgui.End()
+    end
 end
 
 function estimateTotalBTC()
@@ -4040,6 +4033,7 @@ function fixI()
     end)
 end
 
+--  Находится ли игрок на сервер
 function isProperlyConnected()
     if not isSampAvailable() then
         return false
@@ -4054,7 +4048,7 @@ function isProperlyConnected()
     return true
 end
 
-local function updateConnectionState()
+function updateConnectionState()
     local nowConnected = isProperlyConnected()
     local wasConnected = data.connectionState.connected
     data.connectionState.lastCheck = os.time()
@@ -4084,7 +4078,6 @@ function runTaskAndReopenDialog(taskFunction, ...)
         while data.working do
             wait(50)
         end
-        wait(200)
         if sampIsDialogActive() then
             sampCloseCurrentDialogWithButton(0)
         end
@@ -4095,6 +4088,27 @@ function runTaskAndReopenDialog(taskFunction, ...)
     end)
 end
 
+local function closeRackWindow(sendCancel)
+    if sendCancel and data.main[0] and not data.working and (data.rackDialogId or 0) > 0 then
+        sampSendDialogResponse(data.rackDialogId, 0, 0, "")
+    end
+    data.main[0] = false
+    data.rackUserSessionActive = false
+end
+
+local function selectRackCard()
+    if data.working then
+        return false
+    end
+    local card = data.dialogData.videocards[data.selectedRackCardIndex or 1]
+    if not card then
+        return false
+    end
+    sampSendDialogResponse(data.rackDialogId, 1, card.index - 1, "")
+    data.main[0] = false
+    return true
+end
+
 function main()
     repeat
         wait(0)
@@ -4102,11 +4116,6 @@ function main()
     while not isSampLoaded() do
         wait(0)
     end
-    while not sampGetCurrentServerName():find('Arizona') and not sampGetCurrentServerName():find('Rodina') do
-        wait(0)
-    end
-    data.isRodina = not isArizonaServer()
-    dialogIdTable = data.isRodina and dialogIdTable.rodina or dialogIdTable.arizona
 
     utils.addChat('Загружен. Команда: {ffc0cb}/mnt{ffffff}.')
 
@@ -4121,12 +4130,13 @@ function main()
         end
     end
 
-    sampRegisterChatCommand('test', function()
-        utils.pressButton(1024)
-    end)
-
     sampRegisterChatCommand('mnt', function()
         cfg.active = not cfg.active
+        if not cfg.active then
+            closeRackWindow(true)
+            data.showHouseControlWindow[0] = false
+            data.rackUserSessionActive = false
+        end
         utils.addChat(cfg.active and "Скрипт {99ff99}включен." or "Скрипт {F78181}отключен.")
         save()
     end)
@@ -4152,9 +4162,8 @@ function main()
             return
         end
 
-        lua_thread.create(function()
-            sampSendChat("/flashminer")
-        end)
+        sampSendChat("/flashminer")
+
     end)
 
     if cfg.isReloaded then
@@ -4162,22 +4171,12 @@ function main()
         save()
     end
 
-    local waitingForDialogClose = sampIsDialogActive() and sampGetCurrentDialogId() ==
-                                      dialogIdTable.houseFlashMinerDialogId
-
-    if sampIsDialogActive() then
-        local id = sampGetCurrentDialogId()
-        if id == dialogIdTable.houseFlashMinerDialogId then
-            waitingForDialogClose = true
-        end
-    end
-
     local escHandlers = {{
         cond = function()
-            return data.showHelpWindow[0]
+            return data.showHouseControlWindow[0] and data.mainMenuTab ~= "houses"
         end,
         act = function()
-            data.showHelpWindow[0] = false
+            data.mainMenuTab = "houses"
         end
     }, {
         cond = function()
@@ -4218,6 +4217,13 @@ function main()
         end
     }, {
         cond = function()
+            return data.main[0] and not data.working
+        end,
+        act = function()
+            closeRackWindow(true)
+        end
+    }, {
+        cond = function()
             return data.showHouseControlWindow[0] and not data.working and data.lastWindowState.houseControl
         end,
         act = function()
@@ -4241,6 +4247,39 @@ function main()
                     h.act()
                     return
                 end
+            end
+        end
+
+        if data.main[0] and not data.working then
+            local order = data.rackDisplayOrder or {}
+            local cardCount = #order
+            if cardCount > 0 and (wparam == 38 or wparam == 40) then
+                consumeWindowMessage(true, false)
+                local currentPosition = 1
+                for position, sourceIndex in ipairs(order) do
+                    if sourceIndex == data.selectedRackCardIndex then
+                        currentPosition = position
+                        break
+                    end
+                end
+                if wparam == 38 then
+                    currentPosition = currentPosition - 1
+                    if currentPosition < 1 then
+                        currentPosition = cardCount
+                    end
+                else
+                    currentPosition = currentPosition + 1
+                    if currentPosition > cardCount then
+                        currentPosition = 1
+                    end
+                end
+                data.selectedRackCardIndex = order[currentPosition]
+                data.rackScrollToSelection = currentPosition
+                return
+            elseif cardCount > 0 and wparam == 13 then
+                consumeWindowMessage(true, false)
+                selectRackCard()
+                return
             end
         end
 
@@ -4436,20 +4475,7 @@ function main()
 
     while true do
         wait(0)
-        data.lastWindowState.main = data.main[0]
         data.lastWindowState.houseControl = data.showHouseControlWindow[0]
-        if cfg.active then
-            local id = sampGetCurrentDialogId()
-            local isVideocardListActive = (id == dialogIdTable.houseFlashMinerDialogId or id ==
-                                              dialogIdTable.videoCardSt) and sampIsDialogActive() and
-                                              not data.showHouseControlWindow[0]
-            if waitingForDialogClose and not isVideocardListActive then
-                waitingForDialogClose = false
-            end
-            data.main[0] = (isVideocardListActive and not waitingForDialogClose) or
-                               (data.main[0] and data.working and not data.showHouseControlWindow[0])
-            data.showHouseControlWindow[0] = not cfg.useDialogMode and data.showHouseControlWindow[0]
-        end
     end
 end
 
@@ -4517,6 +4543,136 @@ local dialogChecker = {
     end
 }
 
+function waitForDialogSeen(dialogId, previousSerial, timeoutMs)
+    local waited = 0
+    while (data.dialogSeen[dialogId] or 0) <= (previousSerial or 0) and waited < (timeoutMs or 5000) do
+        wait(50)
+        waited = waited + 50
+    end
+    return (data.dialogSeen[dialogId] or 0) > (previousSerial or 0)
+end
+
+function findDialogRow(text, needle)
+    local row = 0
+    local loweredNeedle = tostring(needle or ""):lower()
+    for line in tostring(text or ""):gmatch("[^\r\n]+") do
+        if line:gsub("{......}", ""):lower():find(loweredNeedle, 1, true) then
+            return row
+        end
+        row = row + 1
+    end
+    return nil
+end
+
+local phoneDialogRows = {
+    taxes = nil,
+    housePay = nil
+}
+
+function finishRackCardAction()
+    data.rackCardActionActive = false
+    data.rackPendingAction = nil
+    data.rackPendingSourceIndex = nil
+    data.rackPendingCoolantRemaining = 0
+    data.rackPendingStartedAt = 0
+    data.rackRemovePending = false
+    data.rackRemovePendingUntil = 0
+    data.rackActionCooldownUntil = os.clock() + 0.25
+end
+
+function applyRackCardActionResult(action)
+    local sourceIndex = data.rackPendingSourceIndex or 0
+    local card = data.dialogData.videocards[sourceIndex]
+    if not card then
+        return
+    end
+    if action == 'switch' then
+        local enabled = not card.working
+        card.working = enabled
+        logsTool.add('switch', {
+            enabled = enabled,
+            count = 1
+        })
+    elseif action == 'btc' then
+        local amount = card.btc or 0
+        card.btc, card.btc_full = 0, 0
+        card.profitText = card.card_type == 'ASIC' and string.format("0.000000 BTC / %.6f ASC", card.asc_full or 0) or
+                              "0.000000 BTC"
+        data.forImgui.earnings.btc = math.max(0, (data.forImgui.earnings.btc or 0) - amount)
+        logsTool.add('collect', {
+            btc = amount,
+            asc = 0,
+            houses = 1
+        })
+    elseif action == 'asc' then
+        local amount = card.asc or 0
+        card.asc, card.asc_full = 0, 0
+        card.profitText = card.card_type == 'ASIC' and string.format("%.6f BTC / 0.000000 ASC", card.btc_full or 0) or
+                              "0.000000 ASC"
+        data.forImgui.earnings.asc = math.max(0, (data.forImgui.earnings.asc or 0) - amount)
+        logsTool.add('collect', {
+            btc = 0,
+            asc = amount,
+            houses = 1
+        })
+    elseif action == 'coolant' then
+        local effectiveSuper = cfg.useSuperCoolant or data.isViceCity
+        local refillCount = effectiveSuper and 1 or ((card.coolant or 0) < 50 and 2 or 1)
+        card.coolant = 100
+        logsTool.addCoolant(1, refillCount, effectiveSuper)
+    elseif action == 'remove' then
+        table.remove(data.dialogData.videocards, sourceIndex)
+        data.forImgui.videocardCount = math.max(0, (data.forImgui.videocardCount or 1) - 1)
+        data.selectedRackCardIndex = math.max(1, math.min(sourceIndex, #data.dialogData.videocards))
+    end
+end
+
+function runRackCardAction(action, sourceIndex)
+    if data.working or data.rackCardActionActive or os.clock() < (data.rackActionCooldownUntil or 0) then
+        return false
+    end
+    local card = data.dialogData.videocards[sourceIndex or 0]
+    if not card then
+        return false
+    end
+
+    data.selectedRackCardIndex = sourceIndex
+    data.rackCardActionActive = true
+    data.rackPendingSourceIndex = sourceIndex
+    data.rackPendingStartedAt = os.clock()
+    data.rackActionSuppressUntil = os.clock() + 1.0
+
+    local sr = sampSendDialogResponse
+    sr(data.rackDialogId, 1, card.index - 1, "")
+
+    if action == 'switch' then
+        dialogActions.switchCard(sr)
+    elseif action == 'btc' then
+        dialogActions.withdrawBTC(sr)
+        dialogActions.closeDialog(sr, dialogIdTable.videoCardDialogId)
+    elseif action == 'asc' then
+        dialogActions.withdrawASC(sr)
+        dialogActions.closeDialog(sr, dialogIdTable.videoCardDialogId)
+    elseif action == 'coolant' then
+        local effectiveSuper = cfg.useSuperCoolant or data.isViceCity
+        local refillCount = effectiveSuper and 1 or ((card.coolant or 0) < 50 and 2 or 1)
+        for i = 1, refillCount do
+            dialogActions.refillCoolant(sr, card.fluidType, effectiveSuper, card.card_type == "ASIC")
+        end
+        dialogActions.closeDialog(sr, dialogIdTable.videoCardDialogId)
+    elseif action == 'remove' then
+        dialogActions.removeCard(sr)
+        utils.pressButton(1024)
+    else
+        finishRackCardAction()
+        return false
+    end
+
+    applyRackCardActionResult(action)
+    finishRackCardAction()
+    return true
+end
+
 local massActionTypes = {
     collectFromAllHouses = true,
     massSwitchCards = true,
@@ -4532,8 +4688,16 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
         return
     end
 
+    data.dialogSerial = (data.dialogSerial or 0) + 1
+    data.dialogSeen[dialogId] = data.dialogSerial
+
     if title:find("Выбор дома") and text:find("циклов %(") then
         data.isFlashminer = true
+    end
+
+    if dialogId == dialogIdTable.phoneBankMenuId then
+        phoneDialogRows.taxes = findDialogRow(text, "Оплата всех налогов")
+        phoneDialogRows.housePay = findDialogRow(text, "Пополнить счёт на")
     end
 
     if improveTool.handleChooseDialog(dialogId, title, text) then
@@ -4574,7 +4738,8 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
     end
 
     taskState.refreshSuppressDialogs()
-    local isMassAction = data.suppressDialogs and massActionTypes[data.taskTypeNow] and not cfg.useDialogMode == true
+    local isMassAction = data.suppressDialogs and massActionTypes[data.taskTypeNow]
+    local isDirectRack = dialogId == dialogIdTable.videoCardSt
     if title:find("Выбор дома") and not text:find("домов для") then
         if text:match("циклов %(") then
             data.hasFlashminer = true
@@ -4617,100 +4782,98 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
             return
         end
 
-        if cfg.useDialogMode then
-            local newText = text .. "\n "
-            newText = newText .. "\n{33CC33}» Включить все видеокарты"
-            newText = newText .. "\n"
-            newText = newText .. "\n{FFFF00}» Собрать криптовалюту со всех домов"
-            newText = newText .. "\n"
-            newText = newText .. "\n{FF3333}» Выключить все видеокарты"
-            return {dialogId, style, title, button1, button2, newText, placeholder}
-        else
-            if isMassAction then
-                return false
-            end
+        if isMassAction then
+            return false
+        end
 
-            local wasWindowAlreadyVisible = data.showHouseControlWindow[0]
-            if not data.silentWindowOpen then
-                data.showHouseControlWindow[0] = true
-            end
-            if not data.silentWindowOpen and updateState.hasUpdate and not updateState.declined then
-                updateState.showPopup[0] = true
-            end
-            if not wasWindowAlreadyVisible then
-                local foundIndex = 1
-                if data.lastSelectedHouse ~= -1 then
-                    for i, house in ipairs(data.dialogData.flashminer) do
-                        if house.house_number == data.lastSelectedHouse then
-                            foundIndex = i
-                            break
-                        end
+        local wasWindowAlreadyVisible = data.showHouseControlWindow[0]
+        if not data.backgroundSessionActive then
+            data.main[0] = false
+            data.rackUserSessionActive = false
+            data.showHouseControlWindow[0] = true
+        end
+        if not data.backgroundSessionActive and updateState.hasUpdate and not updateState.declined then
+            updateState.showPopup[0] = true
+        end
+        if not wasWindowAlreadyVisible then
+            data.mainMenuTab = "houses"
+            local foundIndex = 1
+            if data.lastSelectedHouse ~= -1 then
+                for i, house in ipairs(data.dialogData.flashminer) do
+                    if house.house_number == data.lastSelectedHouse then
+                        foundIndex = i
+                        break
                     end
                 end
-                data.selectedHouseIndex = foundIndex
-                data.scrollToSelection = true
             end
+            data.selectedHouseIndex = foundIndex
+            data.scrollToSelection = true
+        end
 
-            local houseNumbers = {}
+        local houseNumbers = {}
+        for _, h in ipairs(data.dialogData.flashminer) do
+            table.insert(houseNumbers, tostring(h.house_number))
+        end
+        table.sort(houseNumbers)
+        local currentHash = table.concat(houseNumbers, ",")
+
+        if not data.backgroundSessionActive and not data.working and cfg.lastHouseListHash ~= currentHash then
+            local newHouses = {}
             for _, h in ipairs(data.dialogData.flashminer) do
-                table.insert(houseNumbers, tostring(h.house_number))
+                local houseNum = tostring(h.house_number)
+                if not cfg.basementScanned[houseNum] and not cfg.excludedHouses[houseNum] then
+                    table.insert(newHouses, h)
+                end
             end
-            table.sort(houseNumbers)
-            local currentHash = table.concat(houseNumbers, ",")
 
-            if not data.silentWindowOpen and not data.working and cfg.lastHouseListHash ~= currentHash then
-                local newHouses = {}
-                for _, h in ipairs(data.dialogData.flashminer) do
-                    local houseNum = tostring(h.house_number)
-                    if not cfg.basementScanned[houseNum] and not cfg.excludedHouses[houseNum] then
-                        table.insert(newHouses, h)
-                    end
-                end
+            local currentHouses = {}
+            for _, num in ipairs(houseNumbers) do
+                currentHouses[num] = true
+            end
 
-                local currentHouses = {}
-                for _, num in ipairs(houseNumbers) do
-                    currentHouses[num] = true
+            for houseNum in pairs(cfg.housesWithoutBasement) do
+                if not currentHouses[houseNum] then
+                    cfg.housesWithoutBasement[houseNum] = nil
                 end
+            end
+            for houseNum in pairs(cfg.basementScanned) do
+                if not currentHouses[houseNum] then
+                    cfg.basementScanned[houseNum] = nil
+                end
+            end
 
-                for houseNum in pairs(cfg.housesWithoutBasement) do
-                    if not currentHouses[houseNum] then
-                        cfg.housesWithoutBasement[houseNum] = nil
-                    end
-                end
-                for houseNum in pairs(cfg.basementScanned) do
-                    if not currentHouses[houseNum] then
-                        cfg.basementScanned[houseNum] = nil
-                    end
-                end
+            cfg.lastHouseListHash = currentHash
+            save()
 
-                cfg.lastHouseListHash = currentHash
-                save()
-
-                if #newHouses > 0 then
-                    local task = buildTaskTable('scanBasements')
-                    runTaskAndReopenDialog(function()
-                        task:run(newHouses)
-                    end)
-                    data.initialScanCompleted = true
-                end
-            elseif not data.silentWindowOpen and not data.initialScanCompleted and not data.working then
-                cfg.lastHouseListHash = currentHash
-                save()
-                local task = buildTaskTable('updateStatuses')
+            if #newHouses > 0 then
+                local task = buildTaskTable('scanBasements')
                 runTaskAndReopenDialog(function()
-                    task:run()
+                    task:run(newHouses)
                 end)
                 data.initialScanCompleted = true
             end
-
-            return false
+        elseif not data.backgroundSessionActive and not data.initialScanCompleted and not data.working then
+            cfg.lastHouseListHash = currentHash
+            save()
+            local task = buildTaskTable('updateStatuses')
+            runTaskAndReopenDialog(function()
+                task:run()
+            end)
+            data.initialScanCompleted = true
         end
+
+        return false
+
     end
 
-    if title:find("^{......}Выберите видеокарту") or title:find("^Полка №%d+") or
-        text:find("Баланс Bitcoin") or text:find('Обзор всех видеокарт') then
+    local isFlashminerRackList = dialogId == dialogIdTable.houseFlashMinerDialogId
+    if isDirectRack or isFlashminerRackList then
+        if data.rackRemovePending then
+            data.rackRemovePending = false
+            data.rackRemovePendingUntil = 0
+        end
         data.flashminerSwitchId.direction = 0
-        data.isFlashminer = title:find("%(дом №%d+%)") ~= nil
+        data.isFlashminer = isFlashminerRackList
         data.dFlashminerId = dialogId
         local houseNum = title:match("дом №(%d+)")
         data.forImgui = {
@@ -4731,17 +4894,30 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
             if line:find("{......}Работает") or line:find("{......}На паузе") then
                 local hasBtc = line:find("BTC") ~= nil
                 local hasAsc = line:find("ASC") ~= nil
+                local btcFull = tonumber(line:match("([%d%.]+) BTC")) or 0
+                local ascFull = tonumber(line:match("([%d%.]+) ASC")) or 0
+                local profits = {}
+                if hasBtc then
+                    profits[#profits + 1] = string.format("%.6f BTC", btcFull)
+                end
+                if hasAsc then
+                    profits[#profits + 1] = string.format("%.6f ASC", ascFull)
+                end
                 local card = {
                     index = listbox_index,
+                    shelf = tonumber(line:match("Полка №(%d+)")) or (#data.dialogData.videocards + 1),
                     working = line:find("{......}Работает") and true or false,
-                    btc_full = tonumber(line:match("([%d%.]+) BTC")) or 0,
-                    asc_full = tonumber(line:match("([%d%.]+) ASC")) or 0,
+                    statusText = line:find("{......}Работает") and "Работает" or "Не активна",
+                    profitText = table.concat(profits, " / "),
+                    btc_full = btcFull,
+                    asc_full = ascFull,
                     btc = tonumber(select(1, line:match("(%d+)%.%d+ BTC"))) or 0,
                     asc = tonumber(select(1, line:match("(%d+)%.%d+ ASC"))) or 0,
                     coolant = tonumber(line:match("(%d+%.%d+)%%?%s*$")) or 0,
                     fluidType = hasBtc and 1 or (hasAsc and 2 or 0),
                     card_type = (hasBtc and hasAsc) and "ASIC" or (hasBtc and "BTC" or "ASC"),
                     level = tonumber(line:match("(%d+) уровень")) or 0,
+                    rawLine = line,
                     id = dialogId
                 }
                 table.insert(data.dialogData.videocards, card)
@@ -4757,7 +4933,7 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
             end
         end
 
-        if houseNum and not cfg.useDialogMode and not cfg.excludedHouses[tostring(houseNum)] then
+        if houseNum and not cfg.excludedHouses[tostring(houseNum)] then
             local currentHouseData = nil
             for _, h in ipairs(data.dialogData.flashminer) do
                 if h.house_number == tonumber(houseNum) then
@@ -4770,8 +4946,24 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
             end)
         end
 
-        if (not data.initialScanCompleted and not cfg.useDialogMode and dialogId ~= dialogIdTable.videoCardSt) or
-            isMassAction then
+        local userRackList = not data.backgroundSessionActive and not data.working and not isMassAction
+        if userRackList and (isDirectRack or data.isFlashminer) then
+            data.rackUserSessionActive = true
+            data.rackDialogId = dialogId
+            data.showHouseControlWindow[0] = false
+            data.selectedRackCardIndex = math.max(1, math.min(data.selectedRackCardIndex or 1,
+                math.max(1, #data.dialogData.videocards)))
+            data.main[0] = true
+            if updateState.hasUpdate and not updateState.declined then
+                updateState.showPopup[0] = true
+            end
+            return false
+        elseif (isDirectRack or data.isFlashminer) then
+            data.main[0] = data.rackUserSessionActive == true
+            return false
+        end
+
+        if not data.initialScanCompleted or isMassAction then
             return false
         end
     end
@@ -4783,7 +4975,15 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
         end
 
         if dialogId == dialogIdTable.videoCardDialogId or dialogId == dialogIdTable.videoCardAcceptDialogId or dialogId ==
-            dialogIdTable.coolantDialogId or dialogId == dialogIdTable.videoCardSt then
+            dialogIdTable.videoCardRemoveDialogId or dialogId == dialogIdTable.coolantDialogId or dialogId ==
+            dialogIdTable.videoCardSt then
+            return false
+        end
+    end
+
+    if os.clock() < (data.rackActionSuppressUntil or 0) then
+        if dialogId == dialogIdTable.videoCardDialogId or dialogId == dialogIdTable.videoCardAcceptDialogId or dialogId ==
+            dialogIdTable.videoCardRemoveDialogId or dialogId == dialogIdTable.coolantDialogId then
             return false
         end
     end
@@ -4794,7 +4994,9 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text, pla
 end
 
 function sampev.onDialogClose(dialogId, button, listitem, input)
-    if dialogId == data.dFlashminerId then
+    if dialogId == data.rackDialogId and button == 0 and not data.working then
+        data.main[0] = false
+    elseif dialogId == data.dFlashminerId then
         data.showHouseControlWindow[0] = false
     end
     coolantTool.handleDialogClose(dialogId, button, listitem, input)
@@ -4901,30 +5103,6 @@ function sampev.onServerMessage(color, text)
             utils.addChat("Дом №" .. house_id .. " добавлен в исключения (Аренда).")
         end
     end
-end
-
-function sampev.onSendDialogResponse(dialogId, button, listitem, input)
-    if dialogId == data.dFlashminerId and button == 1 and cfg.useDialogMode then
-        local houseCount = #data.dialogData.flashminer
-        if listitem == houseCount + 1 then
-            local task = buildTaskTable('massSwitchCards')
-            task:run(true)
-            return false
-        elseif listitem == houseCount + 2 then
-            local task = buildTaskTable('collectFromAllHouses')
-            task:run()
-            return false
-        elseif listitem == houseCount + 3 then
-            local task = buildTaskTable('massSwitchCards')
-            task:run(false)
-            return false
-        end
-    end
-
-    if dialogId == data.dFlashminerId then
-        data.showHouseControlWindow[0] = false
-    end
-    return true
 end
 
 function updateHouseStatus(houseNumber, houseData)
@@ -5166,6 +5344,7 @@ function resetIncomeRates()
 end
 
 function buildTaskTable(taskType, ...)
+    -- Для захода в конкретный дом
     local function visitHouseCards(sendResponse, house, onCards)
         progressTracker.setHouseTotal(0)
         data.dialogData.videocards = {}
@@ -5185,6 +5364,7 @@ function buildTaskTable(taskType, ...)
         progressTracker.increment()
     end
 
+    -- Для сбора крипты в доме
     local function collectCardsFromHouse(sendResponse)
         local cardsToCollect = {}
         for _, card in ipairs(data.dialogData.videocards) do
@@ -5213,19 +5393,12 @@ function buildTaskTable(taskType, ...)
                 ascCollected = ascCollected + card.asc
             end
 
-            if data.isRodina then
-                utils.pressButton(1024)
-                wait(1000)
-                while not (sampIsDialogActive() and sampGetCurrentDialogId() == data.dFlashminerId) do
-                    wait(50)
-                end
-            else
-                dialogActions.closeDialog(sendResponse, dialogIdTable.videoCardDialogId)
-            end
+            dialogActions.closeDialog(sendResponse, dialogIdTable.videoCardDialogId)
         end
 
         return btcCollected, ascCollected
     end
+    -- Переключение видеокарт в доме
     local function switchCardsInHouse(sendResponse, enableCards)
         local cardsToSwitch = {}
         for _, card in ipairs(data.dialogData.videocards) do
@@ -5251,128 +5424,138 @@ function buildTaskTable(taskType, ...)
             dialogActions.selectCard(sendResponse, card.index - 1)
             dialogActions.switchCard(sendResponse)
         end
-        wait(250)
 
         local failed = data.cardSwitchFailed or 0
         return math.max(0, #cardsToSwitch - failed)
     end
+
+    -- Проверка на payday
+    local function isPayday()
+        if data.debugForcePayday == true then
+            return true
+        end
+        local currentTime = os.time()
+        local minute = tonumber(os.date("%M", currentTime)) or 0
+        local second = tonumber(os.date("%S", currentTime)) or 0
+
+        return (minute == 59 and second >= 50) or (minute == 0 and second <= 20) or (minute == 29 and second >= 50) or
+                   (minute == 30 and second <= 20)
+    end
+
+    local function waitForPaydayEnd()
+        if not cfg.pauseOnPayday then
+            return not data.stopAction
+        end
+        data.isWaitingPayday = true
+        data.skipPayday = false
+
+        while not data.skipPayday and isPayday() do
+            if data.stopAction then
+                data.isWaitingPayday = false
+                data.skipPayday = false
+                return false
+            end
+            wait(500)
+        end
+
+        if data.stopAction then
+            data.isWaitingPayday = false
+            data.skipPayday = false
+            return false
+        end
+
+        data.paydaySkippedAt = os.time()
+        data.isWaitingPayday = false
+        data.skipPayday = false
+
+        return not data.stopAction
+    end
+
     local function createProtectedTask(taskFunction, ...)
         local args = {...}
-        return taskState.ifNotWorking(function()
-            local action_count = 0
-            lua_thread.create(function()
-                taskState.setWorking(true)
-                data.taskTypeNow = taskType
-                data.stopAction = false
-                local startTime = os.clock()
-                utils.debugChat(string.format("Задача '%s' запущена...", taskType))
-                action_count = (os.clock() - data.globalActionCounter.lastActionTime) > 3.0 and 0 or
-                                   data.globalActionCounter.count
 
+        return taskState.ifNotWorking(function()
+            -- Блокируем запуск второй задачи сразу, а не после старта потока.
+            taskState.setWorking(true)
+            data.taskTypeNow = taskType
+            data.stopAction = false
+
+            lua_thread.create(function()
+                local startTime = os.clock()
+                local previousActionTime = tonumber(data.globalActionCounter.lastActionTime) or 0
+                local actionCount = os.clock() - previousActionTime > 3.0 and 0 or
+                                        (tonumber(data.globalActionCounter.count) or 0)
+                local actionsBeforePause = math.max(1, tonumber(cfg.count_action) or 1)
+
+                utils.debugChat(string.format("Задача '%s' запущена...", taskType))
+
+                -- Единая точка отправки ответов: отмена, PayDay и ограничение скорости.
                 local function sendResponse(...)
                     if data.stopAction then
-                        return
-                    end
-                    local function isPaydayTime()
-                        if data.skipPayday then
-                            return false
-                        end
-
-                        if data.paydaySkippedAt > 0 and (os.time() - data.paydaySkippedAt) < 120 then
-                            return false
-                        end
-
-                        local os_time = os.time()
-                        local M = tonumber(os.date("%M", os_time))
-                        local S = tonumber(os.date("%S", os_time))
-
-                        return ((M == 59 and S >= 50) or (M == 0 and S <= 20) or (M == 29 and S >= 50) or
-                                   (M == 30 and S <= 20)) and
-                                   (taskType ~= 'updateStatuses' and taskType ~= 'scanBasements')
+                        return false
                     end
 
-                    if isPaydayTime() and cfg.pauseOnPayday then
-                        data.isWaitingPayday = true
-                        data.skipPayday = false
-                        utils.debugChat("{ffe133}Время PayDay...")
-
-                        while not data.skipPayday do
-                            local os_time = os.time()
-                            local M = tonumber(os.date("%M", os_time))
-                            local S = tonumber(os.date("%S", os_time))
-                            local stillPayday =
-                                (M == 59 and S >= 50) or (M == 0 and S <= 20) or (M == 29 and S >= 50) or
-                                    (M == 30 and S <= 20)
-
-                            if not stillPayday then
-                                break
-                            end
-
-                            wait(500)
-                            if data.stopAction then
-                                data.isWaitingPayday = false
-                                data.skipPayday = false
-                                return
-                            end
-                        end
-
-                        data.paydaySkippedAt = os.time()
-                        data.isWaitingPayday = false
-                        data.skipPayday = false
-                        utils.debugChat("{99ff99}Продолжаем.")
-                        wait(1000)
+                    if not waitForPaydayEnd() then
+                        return false
                     end
+
                     sampSendDialogResponse(...)
-                    action_count = action_count + 1
-                    if not data.isRodina and action_count > 0 and action_count % cfg.count_action == 0 then
-                        if taskType ~= 'updateStatuses' then
-                            wait(cfg.pause_duration)
-                        else
-                            wait(150)
+                    actionCount = actionCount + 1
+
+                    if actionCount % actionsBeforePause == 0 then
+                        local delay = taskType == 'updateStatuses' and 150 or
+                                          math.max(0, tonumber(cfg.pause_duration) or 0)
+                        if delay > 0 then
+                            wait(delay)
                         end
-                        utils.debugChat(string.format('Пауза на %d действии', action_count))
+                        utils.debugChat(string.format('Пауза на %d действии', actionCount))
                     end
+
+                    return true
                 end
 
-                local success, err = pcall(function()
+                local success, errorMessage = pcall(function()
                     taskFunction(sendResponse, unpack(args))
                 end)
 
                 if not success then
-                    utils.addChat("{F78181}Критическая ошибка: " .. tostring(err))
-                    print("{F78181}Критическая ошибка: " .. tostring(err))
+                    local message = tostring(errorMessage)
+                    utils.addChat("{F78181}Критическая ошибка: " .. message)
+                    print("{F78181}Критическая ошибка: " .. message)
+
                     if sampIsDialogActive() then
                         sampCloseCurrentDialogWithButton(0)
                     end
-                end
-                if data.stopAction and not data.stopBySystem then
+                elseif stoppedByUser then
                     utils.addChat("{FFE133}Остановлено пользователем.")
                 end
-                data.stopBySystem = false
 
                 local duration = os.clock() - startTime
                 utils.debugChat(string.format("Задача '%s' завершена за %.2f сек.", taskType,
                     duration))
-                data.globalActionCounter.count = action_count
+
+                data.globalActionCounter.count = actionCount
                 data.globalActionCounter.lastActionTime = os.clock()
 
+                local showUpdatedNotification = taskType == 'updateStatuses' and success and not data.stopAction
+
                 progressTracker.reset()
-                wait(100)
+                data.isWaitingPayday = false
+                data.skipPayday = false
+
+                data.taskTypeNow = nil
                 taskState.setWorking(false)
-                if taskType == 'updateStatuses' then
+
+                if showUpdatedNotification then
                     imgui.addNotification(u8 'Обновлено')
                 end
-                data.taskTypeNow = nil
             end)
+
+            return true
         end)
     end
 
-    local task = {
-        data = {
-            mainId = data.dFlashminerId,
-            listBoxes = {}
-        }
-    }
+    local task = {}
 
     if taskType == 'coolant' then
         task.coolant = function(self)
@@ -5383,7 +5566,6 @@ function buildTaskTable(taskType, ...)
                         table.insert(cardsToProcess, card)
                     end
                 end
-
                 if #cardsToProcess == 0 then
                     if not cfg.fixCoolantEnabled then
                         utils.addChat(
@@ -5392,8 +5574,7 @@ function buildTaskTable(taskType, ...)
                     return
                 end
 
-                local coolantBottles = 0
-                local actuallyFilled = 0
+                local coolantBottles, actuallyFilled = 0, 0
 
                 for _, card in ipairs(cardsToProcess) do
                     if data.stopAction then
@@ -5411,12 +5592,10 @@ function buildTaskTable(taskType, ...)
                         if data.stopAction then
                             break
                         end
-                        
+
                         dialogActions.refillCoolant(sendResponse, card.fluidType, effectiveSuper,
                             card.card_type == "ASIC")
                     end
-
-                    wait(200)
 
                     if not data.stopAction then
                         actuallyFilled = actuallyFilled + 1
@@ -5478,9 +5657,7 @@ function buildTaskTable(taskType, ...)
                         wait(300)
                     end
                 end
-                wait(300)
-                local earnings, hasEarnings = formatEarnings(data.withdraw.btc, data.withdraw.asc, not data.isRodina,
-                    "{ffffff} и ")
+                local earnings, hasEarnings = formatEarnings(data.withdraw.btc, data.withdraw.asc, true, "{ffffff} и ")
                 if hasEarnings then
                     utils.addChat("Выведено: " .. earnings .. "{ffffff}.")
                 end
@@ -5577,9 +5754,7 @@ function buildTaskTable(taskType, ...)
                     ::continue_loop::
                 end
 
-                wait(250)
-                local earnings, hasEarnings = formatEarnings(data.withdraw.btc, data.withdraw.asc, not data.isRodina,
-                    "{ffffff} и ")
+                local earnings, hasEarnings = formatEarnings(data.withdraw.btc, data.withdraw.asc, true, "{ffffff} и ")
                 if hasEarnings then
                     utils.addChat("Всего собрано: " .. earnings .. "{ffffff}.")
                     logsTool.add('collect', {
@@ -5673,7 +5848,6 @@ function buildTaskTable(taskType, ...)
                         end
                     end)
                 end
-                wait(300)
 
                 local totalSwitched = 0
                 local housesActuallySwitched = 0
@@ -5879,11 +6053,27 @@ function buildTaskTable(taskType, ...)
                     sampCloseCurrentDialogWithButton(0)
                 end
                 if #summary.houses_to_top_up > 0 and (cfg.fixTopUpEnabled or cfg.useSimpleTopUp) then
+                    local phoneSerial = data.dialogSeen[dialogIdTable.phoneBankMenuId] or 0
                     sampSendChat("/phone")
                     sendcef('launchedApp|24')
                     sampSendChat("/phone")
-                    sendResponse(dialogIdTable.phoneBankMenuId, 1, 10, "")
-                    wait(500)
+                    if not waitForDialogSeen(dialogIdTable.phoneBankMenuId, phoneSerial, 5000) then
+                        utils.addChat("{F78181}Не открылось банковское меню телефона.")
+                        return
+                    end
+                    local houseRow = phoneDialogRows.housePay
+                    if houseRow == nil then
+                        utils.addChat(
+                            "{F78181}Не найден пункт налогов на дом в телефоне.")
+                        return
+                    end
+                    local houseListSerial = data.dialogSeen[dialogIdTable.houseListBankId] or 0
+                    sendResponse(dialogIdTable.phoneBankMenuId, 1, houseRow, "")
+                    if not waitForDialogSeen(dialogIdTable.houseListBankId, houseListSerial, 5000) then
+                        utils.addChat(
+                            "{F78181}Не открылся список домов для пополнения.")
+                        return
+                    end
 
                     for i, house in ipairs(summary.houses_to_top_up) do
                         if data.stopAction or not data.working then
@@ -5914,8 +6104,22 @@ function buildTaskTable(taskType, ...)
                                 break
                             end
 
+                            local inputSerial = data.dialogSeen[dialogIdTable.topUpBalanceDialogId] or 0
                             sendResponse(dialogIdTable.houseListBankId, 1, house.index - 1, "")
+                            if not waitForDialogSeen(dialogIdTable.topUpBalanceDialogId, inputSerial, 5000) then
+                                utils.addChat(string.format(
+                                    "{F78181}Не открылось пополнение дома №%d.",
+                                    house.house_number))
+                                return
+                            end
+                            local nextListSerial = data.dialogSeen[dialogIdTable.houseListBankId] or 0
                             sendResponse(dialogIdTable.topUpBalanceDialogId, 1, 0, tostring(amount_this_transaction))
+                            if not waitForDialogSeen(dialogIdTable.houseListBankId, nextListSerial, 5000) then
+                                utils.addChat(string.format(
+                                    "{F78181}Нет подтверждения пополнения дома №%d.",
+                                    house.house_number))
+                                return
+                            end
 
                             if data.stopAction then
                                 break
@@ -5937,13 +6141,10 @@ function buildTaskTable(taskType, ...)
                         local activeId = sampGetCurrentDialogId()
                         sendResponse(activeId, 0, 0, "")
                     end
-                    wait(100)
                 end
                 -- sampSendChat("/flashminer")
-                wait(300)
                 local report = {}
-                local earnings, hasEarnings = formatEarnings(summary.btc_collected, summary.asc_collected,
-                    not data.isRodina, " и ")
+                local earnings, hasEarnings = formatEarnings(summary.btc_collected, summary.asc_collected, true, " и ")
                 if hasEarnings then
                     table.insert(report, "Собрано: " .. earnings)
                 end
@@ -5984,17 +6185,29 @@ function buildTaskTable(taskType, ...)
         task.run = function(self)
             createProtectedTask(function(sendResponse)
                 taxTool.resetCapturedAmount()
+                taxTool.beginPayment()
 
+                local phoneSerial = data.dialogSeen[dialogIdTable.phoneBankMenuId] or 0
                 sampSendChat("/phone")
                 sendcef('launchedApp|24')
                 sampSendChat("/phone")
-                wait(500)
+                if not waitForDialogSeen(dialogIdTable.phoneBankMenuId, phoneSerial, 5000) then
+                    utils.addChat("{F78181}Не открылось банковское меню телефона.")
+                    return
+                end
 
-                sendResponse(dialogIdTable.phoneBankMenuId, 1, 4, "")
-                wait(300)
-
-                sendResponse(dialogIdTable.payAllTaxesDialogId, 1, 0, "")
-                wait(500)
+                local taxRow = phoneDialogRows.taxes
+                if taxRow == nil then
+                    utils.addChat(
+                        "{F78181}Не найден пункт оплаты всех налогов в телефоне.")
+                    return
+                end
+                sendResponse(dialogIdTable.phoneBankMenuId, 1, taxRow, "")
+                if not taxTool.waitForConfirmation(5000) then
+                    utils.addChat(
+                        "{F78181}Не получено подтверждение оплаты налогов.")
+                    return
+                end
 
                 if sampIsDialogActive() then
                     local activeId = sampGetCurrentDialogId()
@@ -6040,13 +6253,26 @@ function buildTaskTable(taskType, ...)
                 progressTracker.setTotal(#housesToTopUp)
 
                 -- Открываем телефон -> банк -> пополнение
+                local phoneSerial = data.dialogSeen[dialogIdTable.phoneBankMenuId] or 0
                 sampSendChat("/phone")
                 sendcef('launchedApp|24')
                 sampSendChat("/phone")
-                wait(500)
+                if not waitForDialogSeen(dialogIdTable.phoneBankMenuId, phoneSerial, 5000) then
+                    utils.addChat("{F78181}Не открылось банковское меню телефона.")
+                    return
+                end
 
-                sendResponse(dialogIdTable.phoneBankMenuId, 1, 10, "")
-                wait(500)
+                local houseRow = phoneDialogRows.housePay
+                if houseRow == nil then
+                    utils.addChat("{F78181}Не найден пункт налогов на дом в телефоне.")
+                    return
+                end
+                local houseListSerial = data.dialogSeen[dialogIdTable.houseListBankId] or 0
+                sendResponse(dialogIdTable.phoneBankMenuId, 1, houseRow, "")
+                if not waitForDialogSeen(dialogIdTable.houseListBankId, houseListSerial, 5000) then
+                    utils.addChat("{F78181}Не открылся список домов для пополнения.")
+                    return
+                end
 
                 for i, house in ipairs(housesToTopUp) do
                     if data.stopAction then
@@ -6082,8 +6308,22 @@ function buildTaskTable(taskType, ...)
                             break
                         end
 
+                        local inputSerial = data.dialogSeen[dialogIdTable.topUpBalanceDialogId] or 0
                         sendResponse(dialogIdTable.houseListBankId, 1, house.index - 1, "")
+                        if not waitForDialogSeen(dialogIdTable.topUpBalanceDialogId, inputSerial, 5000) then
+                            utils.addChat(string.format(
+                                "{F78181}Не открылось пополнение дома №%d.",
+                                house.house_number))
+                            return
+                        end
+                        local nextListSerial = data.dialogSeen[dialogIdTable.houseListBankId] or 0
                         sendResponse(dialogIdTable.topUpBalanceDialogId, 1, 0, tostring(amount))
+                        if not waitForDialogSeen(dialogIdTable.houseListBankId, nextListSerial, 5000) then
+                            utils.addChat(string.format(
+                                "{F78181}Нет подтверждения пополнения дома №%d.",
+                                house.house_number))
+                            return
+                        end
 
                         totalTopUp = totalTopUp + amount
                         remaining = remaining - amount
@@ -6102,14 +6342,14 @@ function buildTaskTable(taskType, ...)
                     local activeId = sampGetCurrentDialogId()
                     sendResponse(activeId, 0, 0, "")
                 end
-                wait(100)
 
-                cfg.lastAutoTopUpTime = os.time()
-                save()
+                --sampSendChat("/flashminer")
 
                 data.currentCollectHouse = ""
 
                 if totalTopUp > 0 then
+                    cfg.lastAutoTopUpTime = os.time()
+                    save()
                     utils.addChat(string.format(
                         "{BEF781}Баланс пополнен: {FFD700}$%s {808080}(%d домов)",
                         utils.formatNumber(totalTopUp), housesCount))
@@ -6124,46 +6364,32 @@ function buildTaskTable(taskType, ...)
     return task
 end
 
-function withSilentFlashminer(callback)
-    if data.working then
+function runBackgroundFlashminerTask(taskName, arg)
+    if data.working or not flashminerTool.hasIt() then
         return false
     end
-    if not flashminerTool.hasIt() then
-        return false
-    end
+
     local restoreHouseControl = data.showHouseControlWindow[0] == true
-    taskState.setSilent(true)
+    taskState.setBackgroundSession(true)
     if not flashminerTool.requestList(5000) then
-        taskState.setSilent(false)
+        taskState.setBackgroundSession(false)
         return false
     end
 
-    local result = callback()
+    local task = buildTaskTable(taskName)
+    task:run(arg)
+    while data.working do
+        wait(200)
+    end
 
-    wait(300)
     if sampIsDialogActive() then
         sampCloseCurrentDialogWithButton(0)
         wait(300)
     end
     fixI()
-    wait(300)
-    data.silentWindowOpen = false
+    taskState.setBackgroundSession(false)
     data.showHouseControlWindow[0] = restoreHouseControl
-    return result ~= false
-end
-
-function runSilentTask(taskName, arg)
-    if data.working then
-        return false
-    end
-    return withSilentFlashminer(function()
-        local task = buildTaskTable(taskName)
-        task:run(arg)
-        wait(500)
-        while data.working do
-            wait(200)
-        end
-    end)
+    return true
 end
 
 imgui.OnInitialize(function()
@@ -6176,6 +6402,86 @@ imgui.OnInitialize(function()
     local iconRanges = imgui.new.ImWchar[3](fa.min_range, fa.max_range, 0)
     imgui.GetIO().Fonts:AddFontFromMemoryCompressedBase85TTF(fa.get_font_data_base85('solid'), 14, config, iconRanges)
 end)
+
+local toggleAnimations = {}
+
+function imgui.ToggleButton(str_id, bool, disabled)
+    local rBool = false
+
+    local function ImSaturate(f)
+        return f < 0.0 and 0.0 or (f > 1.0 and 1.0 or f)
+    end
+
+    local p = imgui.GetCursorScreenPos()
+    local dl = imgui.GetWindowDrawList()
+    local style = imgui.GetStyle()
+    local textHeight = imgui.GetTextLineHeight()
+    local height = (textHeight + style.FramePadding.y * 2) * 0.80
+    local width = height * 1.70
+    local radius = height * 0.50
+    local ANIM_SPEED = 0.22
+    local butPos = imgui.GetCursorPos()
+    local key = tostring(bool) .. "|" .. tostring(str_id)
+    local animation = toggleAnimations[key]
+    if not animation then
+        animation = {
+            value = bool[0] and 1.0 or 0.0,
+            target = bool[0] and 1.0 or 0.0,
+            lastTime = os.clock()
+        }
+        toggleAnimations[key] = animation
+    end
+
+    if disabled then
+        imgui.Dummy(imgui.ImVec2(width, height))
+    elseif imgui.InvisibleButton(str_id, imgui.ImVec2(width, height)) then
+        bool[0] = not bool[0]
+        rBool = true
+    end
+
+    imgui.SetCursorPos(imgui.ImVec2(butPos.x + width + 8, butPos.y + (height - textHeight) / 2))
+    local label = str_id:gsub('##.+', '')
+    if disabled then
+        imgui.TextDisabled(label)
+    else
+        imgui.Text(label)
+    end
+
+    local now = os.clock()
+    local elapsed = now - (animation.lastTime or now)
+    local delta = math.min(elapsed, 0.05)
+    animation.lastTime = now
+    animation.target = bool[0] and 1.0 or 0.0
+    if elapsed > 0.25 then
+        animation.value = animation.target
+    end
+    local blend = 1 - math.exp(-delta / ANIM_SPEED * 4)
+    animation.value = animation.value + (animation.target - animation.value) * blend
+    if math.abs(animation.value - animation.target) < 0.001 then
+        animation.value = animation.target
+    end
+    local t = ImSaturate(animation.value)
+
+    local function mixColor(from, to, progress)
+        return imgui.ImVec4(from.x + (to.x - from.x) * progress, from.y + (to.y - from.y) * progress,
+            from.z + (to.z - from.z) * progress, from.w + (to.w - from.w) * progress)
+    end
+
+    local trackColor
+    local knobColor
+    if disabled then
+        trackColor = style.Colors[imgui.Col.FrameBg]
+        knobColor = style.Colors[imgui.Col.TextDisabled]
+    else
+        trackColor = mixColor(style.Colors[imgui.Col.FrameBg], imgui.ImVec4(0.22, 0.72, 0.32, 1.0), t)
+        knobColor = mixColor(style.Colors[imgui.Col.TextDisabled], imgui.ImVec4(1.0, 1.0, 1.0, 1.0), t)
+    end
+
+    dl:AddRectFilled(p, imgui.ImVec2(p.x + width, p.y + height), imgui.ColorConvertFloat4ToU32(trackColor), height * 0.5)
+    dl:AddCircleFilled(imgui.ImVec2(p.x + radius + t * (width - radius * 2.0), p.y + radius), radius - 1.5,
+        imgui.ColorConvertFloat4ToU32(knobColor))
+    return rBool
+end
 
 function applyStyle()
     imgui.SwitchContext()
@@ -6261,98 +6567,65 @@ function applyStyle()
     colors[Col.ModalWindowDimBg] = ImVec4(0.00, 0.00, 0.00, 0.70)
 end
 
-function applyCustomStyle()
-    imgui.SwitchContext()
-    local style = imgui.GetStyle()
-    local colors = style.Colors
-    local Col = imgui.Col
-    local ImVec4 = imgui.ImVec4
-    local ImVec2 = imgui.ImVec2
+local _nAlpha, _nAlphaVel, _nOffset, _nOffsetVel, _nLastT, _nSaveT = 0.0, 0.0, 12.0, 0.0, 0.0, 0.0
 
-    colors[Col.Text] = ImVec4(1, 1, 1, 1)
-    colors[Col.TextDisabled] = ImVec4(0.5, 0.5, 0.5, 1)
-    colors[Col.WindowBg] = ImVec4(0.07, 0.07, 0.07, 1)
-    colors[Col.ChildBg] = ImVec4(0.07, 0.07, 0.07, 1)
-    colors[Col.PopupBg] = ImVec4(0.07, 0.07, 0.07, 1)
-    colors[Col.Border] = ImVec4(0.25, 0.25, 0.26, 0.54)
-    colors[Col.BorderShadow] = ImVec4(0, 0, 0, 0)
-    colors[Col.FrameBg] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.FrameBgHovered] = ImVec4(0.25, 0.25, 0.26, 1)
-    colors[Col.FrameBgActive] = ImVec4(0.25, 0.25, 0.26, 1)
-    colors[Col.TitleBg] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.TitleBgActive] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.TitleBgCollapsed] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.MenuBarBg] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.ScrollbarBg] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.ScrollbarGrab] = ImVec4(0, 0, 0, 1)
-    colors[Col.ScrollbarGrabHovered] = ImVec4(0.41, 0.41, 0.41, 1)
-    colors[Col.ScrollbarGrabActive] = ImVec4(0.51, 0.51, 0.51, 1)
-    colors[Col.CheckMark] = ImVec4(1, 1, 1, 1)
-    colors[Col.SliderGrab] = ImVec4(1, 1, 1, 0.3)
-    colors[Col.SliderGrabActive] = ImVec4(1, 1, 1, 0.3)
-    colors[Col.Button] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.ButtonHovered] = ImVec4(0.21, 0.2, 0.2, 1)
-    colors[Col.ButtonActive] = ImVec4(0.41, 0.41, 0.41, 1)
-    colors[Col.Header] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.HeaderHovered] = ImVec4(0.2, 0.2, 0.2, 1)
-    colors[Col.HeaderActive] = ImVec4(0.47, 0.47, 0.47, 1)
-    colors[Col.Separator] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.SeparatorHovered] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.SeparatorActive] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.ResizeGrip] = ImVec4(1, 1, 1, 0.25)
-    colors[Col.ResizeGripHovered] = ImVec4(1, 1, 1, 0.67)
-    colors[Col.ResizeGripActive] = ImVec4(1, 1, 1, 0.95)
-    colors[Col.Tab] = ImVec4(0.12, 0.12, 0.12, 1)
-    colors[Col.TabHovered] = ImVec4(0.28, 0.28, 0.28, 1)
-    colors[Col.TabActive] = ImVec4(0.3, 0.3, 0.3, 1)
-    colors[Col.TabUnfocused] = ImVec4(0.07, 0.1, 0.15, 0.97)
-    colors[Col.TabUnfocusedActive] = ImVec4(0.14, 0.26, 0.42, 1)
-    colors[Col.PlotLines] = ImVec4(0.61, 0.61, 0.61, 1)
-    colors[Col.PlotLinesHovered] = ImVec4(1, 0.43, 0.35, 1)
-    colors[Col.PlotHistogram] = ImVec4(0.9, 0.7, 0, 1)
-    colors[Col.PlotHistogramHovered] = ImVec4(1, 0.6, 0, 1)
-    colors[Col.TextSelectedBg] = ImVec4(1, 0, 0, 0.35)
-    colors[Col.DragDropTarget] = ImVec4(1, 1, 0, 0.9)
-    colors[Col.NavHighlight] = ImVec4(0.26, 0.59, 0.98, 1)
-    colors[Col.NavWindowingHighlight] = ImVec4(1, 1, 1, 0.7)
-    colors[Col.NavWindowingDimBg] = ImVec4(0.8, 0.8, 0.8, 0.2)
-    colors[Col.ModalWindowDimBg] = ImVec4(0, 0, 0, 0.7)
+local notificationThemes = {
+    reminder = {
+        icon = fa.COINS,
+        title = "Напоминание",
+        accent = imgui.ImVec4(1.00, 0.72, 0.20, 1.00)
+    },
+    countdown = {
+        icon = fa.CLOCK,
+        title = "Автосбор",
+        accent = imgui.ImVec4(0.35, 0.70, 1.00, 1.00)
+    },
+    collecting = {
+        icon = fa.ROTATE,
+        title = "Автосбор",
+        accent = imgui.ImVec4(0.30, 0.85, 0.40, 1.00)
+    },
+    improveHint = {
+        icon = fa.MICROCHIP,
+        title = "Заточка",
+        accent = imgui.ImVec4(0.70, 0.50, 1.00, 1.00)
+    }
+}
 
-    style.WindowPadding = ImVec2(5, 5)
-    style.FramePadding = ImVec2(5, 5)
-    style.ItemSpacing = ImVec2(5, 5)
-    style.ItemInnerSpacing = ImVec2(2, 2)
-    style.TouchExtraPadding = ImVec2(0, 0)
-    style.IndentSpacing = 0
-    style.ScrollbarSize = 10
-    style.GrabMinSize = 10
-    style.WindowBorderSize = 1
-    style.ChildBorderSize = 1
-    style.PopupBorderSize = 1
-    style.FrameBorderSize = 0
-    style.TabBorderSize = 1
-    style.WindowRounding = 5
-    style.ChildRounding = 5
-    style.FrameRounding = 5
-    style.PopupRounding = 5
-    style.ScrollbarRounding = 5
-    style.GrabRounding = 5
-    style.TabRounding = 5
-    style.WindowTitleAlign = ImVec2(0.5, 0.5)
-    style.ButtonTextAlign = ImVec2(0.5, 0.5)
-    style.SelectableTextAlign = ImVec2(0.5, 0.5)
+function notificationColor(color, alpha)
+    return imgui.ImVec4(color.x, color.y, color.z, (color.w or 1.0) * alpha)
 end
 
-local _nAlpha, _nAlphaVel, _nLastT, _nSaveT = 0.0, 0.0, 0.0, 0.0
+function drawNotificationRow(icon, text, accent, secondary)
+    imgui.TextColored(notificationColor(accent, _nAlpha), icon)
+    imgui.SameLine(0, 8)
+    imgui.TextColored(notificationColor(secondary and imgui.ImVec4(0.66, 0.68, 0.73, 1.0) or
+                                            imgui.ImVec4(0.95, 0.96, 0.98, 1.0), _nAlpha), text)
+end
 
--- окно подсказки
+function drawWrappedNotificationText(text, accent)
+    imgui.PushTextWrapPos(imgui.GetCursorPosX() + 460)
+    imgui.TextColored(notificationColor(accent, _nAlpha), text)
+    imgui.PopTextWrapPos()
+end
+
+function drawNotificationProgress(value, accent)
+    value = math.min(math.max(value or 0, 0), 1)
+    imgui.PushStyleColor(imgui.Col.PlotHistogram, notificationColor(accent, _nAlpha))
+    imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.14, 0.15, 0.20, _nAlpha))
+    imgui.ProgressBar(value, imgui.ImVec2(-1, 12), "")
+    imgui.PopStyleColor(2)
+end
+
+-- Окно уведомления
 imgui.OnFrame(function()
     return data.notifyWindow.show[0] or _nAlpha > 0.005 or isInImproveHintRange()
 end, function(self)
     local inImproveRange = isInImproveHintRange()
-    local curMode = data.notifyWindow.mode
-    local higherPriority = (curMode == 'countdown' or curMode == 'collecting' or curMode == 'reminder') and
-                               data.notifyWindow.show[0]
+    local currentMode = data.notifyWindow.mode
+    local actionMode = currentMode == 'countdown' or currentMode == 'collecting'
+    local higherPriority = actionMode or currentMode == 'reminder'
+
     if inImproveRange and not higherPriority then
         data.notifyWindow.show[0] = true
         data.notifyWindow.mode = 'improveHint'
@@ -6362,8 +6635,7 @@ end, function(self)
         data.notifyWindow.show[0] = false
     end
 
-    if not cfg.notifyAutoCollectEnabled and
-        (data.notifyWindow.mode == 'countdown' or data.notifyWindow.mode == 'collecting') then
+    if not cfg.notifyAutoCollectEnabled and actionMode then
         data.notifyWindow.show[0] = false
     end
     if data.notifyWindow.autoHideAt > 0 and os.time() >= data.notifyWindow.autoHideAt then
@@ -6375,192 +6647,170 @@ end, function(self)
     local now = os.clock()
     local dt = _nLastT > 0 and math.min(now - _nLastT, 0.05) or 0.016
     _nLastT = now
-    local tgt = data.notifyWindow.show[0] and 1.0 or 0.0
-    _nAlpha, _nAlphaVel = smoothDamp(_nAlpha, tgt, _nAlphaVel, dt, 0.22)
+    local targetAlpha = data.notifyWindow.show[0] and 1.0 or 0.0
+    local targetOffset = data.notifyWindow.show[0] and 0.0 or 12.0
+    _nAlpha, _nAlphaVel = smoothDamp(_nAlpha, targetAlpha, _nAlphaVel, dt, 0.22)
+    _nOffset, _nOffsetVel = smoothDamp(_nOffset, targetOffset, _nOffsetVel, dt, 0.20)
+
     if _nAlpha < 0.005 then
         return
     end
 
     applyStyle()
     local sw, sh = getScreenResolution()
-
     local isPreview = data.notifyWindow.isPreview
-    local isActionMode = data.notifyWindow.mode == 'countdown' or data.notifyWindow.mode == 'collecting'
     local isChatOpen = sampIsChatInputActive()
-
     self.HideCursor = not (isPreview or isChatOpen)
 
+    local configuredX = cfg.notifyWindowPosX * sw
+    local configuredY = cfg.notifyWindowPosY * sh
     if isPreview then
-        imgui.SetNextWindowPos(imgui.ImVec2(cfg.notifyWindowPosX * sw, cfg.notifyWindowPosY * sh), imgui.Cond.Appearing)
+        imgui.SetNextWindowPos(imgui.ImVec2(configuredX, configuredY + _nOffset), imgui.Cond.Appearing)
     else
-        imgui.SetNextWindowPos(imgui.ImVec2(cfg.notifyWindowPosX * sw, cfg.notifyWindowPosY * sh), imgui.Cond.Always)
+        imgui.SetNextWindowPos(imgui.ImVec2(configuredX, configuredY + _nOffset), imgui.Cond.Always)
+    end
+    imgui.SetNextWindowSizeConstraints(imgui.ImVec2(360, 0), imgui.ImVec2(520, sh - 40))
+
+    local mode = data.notifyWindow.mode
+    local theme = notificationThemes[mode] or notificationThemes.countdown
+    local accent = theme.accent
+    local flags = imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoScrollbar +
+                      imgui.WindowFlags.NoResize + imgui.WindowFlags.AlwaysAutoResize + 4096
+    if not isPreview then
+        flags = flags + 512
     end
 
-    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.06, 0.07, 0.10, 0.96 * _nAlpha))
-    imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.22, 0.24, 0.30, 0.90 * _nAlpha))
+    imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.055, 0.065, 0.095, 0.97 * _nAlpha))
+    imgui.PushStyleColor(imgui.Col.Border, notificationColor(accent, 0.65 * _nAlpha))
     imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.95, 0.96, 0.98, _nAlpha))
-    imgui.PushStyleColor(imgui.Col.Separator, imgui.ImVec4(0.20, 0.22, 0.27, 0.50 * _nAlpha))
+    imgui.PushStyleColor(imgui.Col.Separator, notificationColor(accent, 0.28 * _nAlpha))
     imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.13, 0.14, 0.19, _nAlpha))
 
-    local flags = imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoScrollbar +
-                      imgui.WindowFlags.NoResize + imgui.WindowFlags.AlwaysAutoResize + 4096 + (isPreview and 0 or 512) +
-                      (isPreview and 0 or imgui.WindowFlags.NoMove)
-
-    if imgui.Begin("##mntNotify", data.notifyWindow.show, flags) then
+    local opened = imgui.Begin("##mntNotify", data.notifyWindow.show, flags)
+    if opened then
         if isPreview then
-            local wp = imgui.GetWindowPos()
-            local nx, ny = wp.x / sw, wp.y / sh
+            local windowPos = imgui.GetWindowPos()
+            local nx = windowPos.x / sw
+            local ny = (windowPos.y - _nOffset) / sh
             if math.abs(nx - cfg.notifyWindowPosX) > 0.003 or math.abs(ny - cfg.notifyWindowPosY) > 0.003 then
                 cfg.notifyWindowPosX, cfg.notifyWindowPosY = nx, ny
-                local t = os.clock()
-                if t - _nSaveT > 1.5 then
-                    _nSaveT = t;
+                local saveTime = os.clock()
+                if saveTime - _nSaveT > 1.5 then
+                    _nSaveT = saveTime
                     save()
                 end
             end
         end
 
-        if isActionMode and isChatOpen then
-            local wp = imgui.GetWindowPos()
-            local ws = imgui.GetWindowSize()
-            local mx = imgui.GetIO().MousePos.x
-            local my = imgui.GetIO().MousePos.y
-            local inWindow = mx >= wp.x and mx <= wp.x + ws.x and my >= wp.y and my <= wp.y + ws.y
-
-            if inWindow and imgui.GetIO().MouseClicked[1] then
+        if actionMode and isChatOpen then
+            local windowPos = imgui.GetWindowPos()
+            local windowSize = imgui.GetWindowSize()
+            local mouse = imgui.GetIO().MousePos
+            local inside =
+                mouse.x >= windowPos.x and mouse.x <= windowPos.x + windowSize.x and mouse.y >= windowPos.y and mouse.y <=
+                    windowPos.y + windowSize.y
+            if inside and imgui.GetIO().MouseClicked[1] then
                 collectTool.cancelPending()
                 data.notifyWindow.show[0] = false
             end
         end
 
-        local mode = data.notifyWindow.mode
-        local secsLeft = (mode == 'countdown') and (data.notifyWindow.countdownTarget - os.time()) or 0
-
-        if mode == 'improveHint' then
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.MICROCHIP)
-            imgui.SameLine(0, 6)
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), u8 "Заточка")
-        else
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.COINS)
-            imgui.SameLine(0, 6)
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), u8 "Mining Tools")
-        end
+        -- Заголовок карточки уведомления.
+        drawNotificationRow(theme.icon, u8(theme.title), accent)
         imgui.Separator()
         imgui.Spacing()
 
         if mode == 'reminder' then
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.COINS)
-            imgui.SameLine(0, 6)
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), u8(
-                string.format("Накопилось ~%d BTC", math.floor(data.notifyWindow.btcAmount or 0))))
+            drawNotificationRow(fa.COINS, u8(
+                string.format("Накопилось ~%d BTC", math.floor(data.notifyWindow.btcAmount or 0))), accent)
             imgui.Spacing()
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.CIRCLE_EXCLAMATION)
-            imgui.SameLine(0, 6)
-            imgui.TextColored(imgui.ImVec4(0.6, 0.6, 0.6, _nAlpha),
-                u8 "Рекомендуется собрать криптовалюту.")
+            drawNotificationRow(fa.CIRCLE_EXCLAMATION,
+                u8 "Рекомендуется собрать криптовалюту.", accent, true)
         elseif mode == 'countdown' then
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.CLOCK)
-            imgui.SameLine(0, 6)
-            local cdText = secsLeft <= 0 and u8 "Автосбор начинается!" or
-                               u8(string.format("Автосбор через: %s", formatTimeLeft(secsLeft)))
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), cdText)
+            local secondsLeft = data.notifyWindow.countdownTarget - os.time()
+            local countdownText = secondsLeft <= 0 and u8 "Автосбор начинается!" or
+                                      u8(string.format("Автосбор через: %s", formatTimeLeft(secondsLeft)))
+            drawNotificationRow(fa.CLOCK, countdownText, accent)
             imgui.Spacing()
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.ROTATE)
-            imgui.SameLine(0, 6)
-            local subText
+            local targetText
             if data.notifyWindow.source == 'smart' then
-                subText = u8(string.format("Цель: %d BTC", cfg.smartCollectTarget))
+                targetText = u8(string.format("Цель: %d BTC", cfg.smartCollectTarget))
             else
-                subText = u8(string.format("%d сборов в день", cfg.collectTimesPerDay))
+                targetText = u8(string.format("%d сборов в день", cfg.collectTimesPerDay))
             end
-            imgui.TextColored(imgui.ImVec4(0.6, 0.6, 0.6, _nAlpha), subText)
+            drawNotificationRow(fa.ROTATE, targetText, accent, true)
             imgui.Spacing()
-            imgui.TextColored(imgui.ImVec4(0.45, 0.45, 0.45, _nAlpha * 0.8),
+            imgui.TextColored(notificationColor(imgui.ImVec4(0.45, 0.47, 0.52, 1.0), 0.8 * _nAlpha),
                 isChatOpen and u8 "ПКМ — отменить автосбор" or
                     u8 "T + ПКМ — отменить автосбор")
         elseif mode == 'collecting' then
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.ROTATE)
-            imgui.SameLine(0, 6)
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), u8 "Автосбор выполняется...")
+            drawNotificationRow(fa.ROTATE, u8 "Автосбор выполняется...", accent)
             imgui.Spacing()
-            imgui.TextColored(imgui.ImVec4(1, 1, 1, _nAlpha), fa.HOUSE)
-            imgui.SameLine(0, 6)
             local houseText = (data.currentCollectHouse ~= "" and data.currentCollectHouse) or
                                   u8 "Подготовка..."
-            imgui.TextColored(imgui.ImVec4(0.6, 0.6, 0.6, _nAlpha), houseText)
+            drawNotificationRow(fa.HOUSE, houseText, accent, true)
             imgui.Spacing()
-            local prog = data.progressTotal > 0 and (data.progressCurrent / data.progressTotal) or 0
-            imgui.PushStyleColor(imgui.Col.PlotHistogram, imgui.ImVec4(0.3, 0.8, 0.3, _nAlpha))
-            imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.15, 0.15, 0.15, _nAlpha))
-            imgui.ProgressBar(prog, imgui.ImVec2(-1, 14), u8(
+            local progress = data.progressTotal > 0 and data.progressCurrent / data.progressTotal or 0
+            drawNotificationProgress(progress, accent)
+            imgui.TextColored(notificationColor(imgui.ImVec4(0.66, 0.68, 0.73, 1.0), _nAlpha), u8(
                 string.format("%d / %d домов", data.progressCurrent,
                     data.progressTotal > 0 and data.progressTotal or 0)))
-            imgui.PopStyleColor(2)
             imgui.Spacing()
-            imgui.TextColored(imgui.ImVec4(0.45, 0.45, 0.45, _nAlpha * 0.8),
+            imgui.TextColored(notificationColor(imgui.ImVec4(0.45, 0.47, 0.52, 1.0), 0.8 * _nAlpha),
                 isChatOpen and u8 "ПКМ — отменить автосбор" or
                     u8 "T + ПКМ — отменить автосбор")
         elseif mode == 'improveHint' then
-            imgui.TextColored(imgui.ImVec4(0.7, 0.85, 1.0, _nAlpha),
-                u8 "Нажмите Alt, чтобы открыть окно заточки.")
+            drawWrappedNotificationText(u8 "Нажмите Alt, чтобы открыть окно заточки.",
+                accent)
+        else
+            drawWrappedNotificationText(u8 "Выполняется операция...", accent)
         end
 
         imgui.Spacing()
-        imgui.End()
     end
-
+    imgui.End()
     imgui.PopStyleColor(5)
 end)
 
--- окно помощни
-imgui.OnFrame(function()
-    return data.showHelpWindow[0]
-end, function(self)
-    applyStyle()
-    local sw, sh = getScreenResolution()
-    imgui.SetNextWindowSizeConstraints(imgui.ImVec2(560, 100), imgui.ImVec2(560, sh - 40))
-    imgui.SetNextWindowPos(imgui.ImVec2(sw / 2, sh / 2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5, 0.5))
+local uiTabAnimations = {}
 
-    if imgui.Begin("##helpWin", data.showHelpWindow,
-        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize +
-            imgui.WindowFlags.NoScrollbar + 64) then
-        local imStyle = imgui.GetStyle()
-        local winW = imgui.GetWindowWidth()
-
-        local isSetup = data.helpWindowMode == 'setup'
-        local titleIcon = isSetup and fa.GEAR or fa.CIRCLE_QUESTION
-        local titleStr = isSetup and "Первоначальная настройка" or "Помощь"
-
-        local totalTitleW = imgui.CalcTextSize(titleIcon).x + 8 + imgui.CalcTextSize(titleStr).x
-        imgui.SetCursorPos(imgui.ImVec2((winW - totalTitleW) / 2, imStyle.ItemSpacing.y + 3))
-        imgui.Text(titleIcon)
-        imgui.SameLine(0, 8)
-        imgui.SetCursorPosY(imStyle.ItemSpacing.y + 3)
-        imgui.TextColoredRGB("{FFFFFF}Помощь")
-
-        imgui.SetCursorPos(imgui.ImVec2(winW - 50 - imStyle.ItemSpacing.x, imStyle.ItemSpacing.y))
-        if imgui.Button(fa.XMARK .. "##helpClose", imgui.ImVec2(40, 22)) then
-            data.showHelpWindow[0] = false
-        end
-        imgui.Hint("Закрыть справку")
-        imgui.Separator()
-        imgui.Spacing()
-
-        if isSetup then
-            helpTool.renderSetup()
-        else
-            helpTool.renderReference()
-        end
-
-        imgui.Spacing()
-        if imgui.Button(u8(isSetup and "Завершить настройку" or "Понятно, закрыть"),
-            imgui.ImVec2(-1, 30)) then
-            data.showHelpWindow[0] = false
-        end
-
-        imgui.End()
+function getAnimatedTabOffset(id, target)
+    local now = os.clock()
+    local state = uiTabAnimations[id]
+    if not state then
+        state = {
+            value = target,
+            lastTime = now
+        }
+        uiTabAnimations[id] = state
+        return target
     end
-end)
+    local delta = math.min(now - state.lastTime, 0.05)
+    state.lastTime = now
+    state.value = state.value + (target - state.value) * (1 - math.exp(-delta * 16))
+    if math.abs(state.value - target) < 0.05 then
+        state.value = target
+    end
+    return state.value
+end
+
+function renderAnimatedTabHighlight(id, selectedIndex, count, totalWidth, height, spacing)
+    local step = (totalWidth + spacing) / count
+    local offset = getAnimatedTabOffset(id, (selectedIndex or 0) * step)
+    local pos = imgui.GetCursorScreenPos()
+    local tabWidth = (totalWidth - spacing * (count - 1)) / count
+    imgui.GetWindowDrawList():AddRectFilled(imgui.ImVec2(pos.x + offset, pos.y),
+        imgui.ImVec2(pos.x + offset + tabWidth, pos.y + height),
+        imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.16, 0.40, 0.72, 0.62)), 4.0)
+end
+
+function renderAnimatedVerticalTabHighlight(id, selectedIndex, width, height, spacing)
+    local offset = getAnimatedTabOffset(id, (selectedIndex or 0) * (height + spacing))
+    local pos = imgui.GetCursorScreenPos()
+    imgui.GetWindowDrawList():AddRectFilled(imgui.ImVec2(pos.x, pos.y + offset),
+        imgui.ImVec2(pos.x + width, pos.y + offset + height),
+        imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.16, 0.40, 0.72, 0.62)), 4.0)
+end
 
 -- окно заточки
 imgui.OnFrame(function()
@@ -6580,13 +6830,14 @@ end, function()
         do
             local subTabs = {u8 "Заточка", u8 "Задержка"}
             local stCount = #subTabs
-            local stW = (winW - imStyle.WindowPadding.x * 2 - imStyle.ItemSpacing.x * (stCount - 1)) / stCount
+            local stTotal = winW - imStyle.WindowPadding.x * 2
+            local stW = (stTotal - imStyle.ItemSpacing.x * (stCount - 1)) / stCount
+            renderAnimatedTabHighlight("improve", data.improveSubTab, stCount, stTotal, 30, imStyle.ItemSpacing.x)
             for si, sl in ipairs(subTabs) do
                 if si > 1 then
                     imgui.SameLine(0, imStyle.ItemSpacing.x)
                 end
-                imgui.PushStyleColor(imgui.Col.Button, data.improveSubTab == si - 1 and
-                    imgui.ImVec4(0.18, 0.28, 0.45, 1) or imgui.ImVec4(0.11, 0.12, 0.16, 1))
+                imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.11, 0.12, 0.16, 0.45))
                 imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20, 0.30, 0.48, 1))
                 imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.32, 0.50, 1))
                 if imgui.Button(sl .. "##impSub", imgui.ImVec2(stW, 30)) then
@@ -6726,7 +6977,7 @@ end, function()
             imgui.Separator()
             imgui.Spacing()
 
-            if imgui.Checkbox(u8 "Улучшать все карты", imcfg.improveMenuAll) then
+            if imgui.ToggleButton(u8 "Улучшать все карты##imcfg_improveMenuAll", imcfg.improveMenuAll) then
                 cfg.improveMenuAll = imcfg.improveMenuAll[0]
                 if cfg.improveMenuAll then
                     data.improve.selectedSlots = {}
@@ -6735,10 +6986,11 @@ end, function()
             end
             imgui.Hint(
                 "Если выкл — точатся только выбранные карты (можно несколько).\n" ..
-                    "ПКМ по карте — пометить как «только хранилище».")
+                    "ПКМ по карте — пометить как «только хранилище.")
 
             if cfg.improveMenuAll and not cfg.improveUseStorageUpgrade then
-                if imgui.Checkbox(u8 "После — навесить хранилище на все",
+                if imgui.ToggleButton(
+                    u8 "После — навесить хранилище на все##imcfg_improveStorageAfterAll",
                     imcfg.improveStorageAfterAll) then
                     cfg.improveStorageAfterAll = imcfg.improveStorageAfterAll[0]
                     if cfg.improveStorageAfterAll then
@@ -6751,14 +7003,16 @@ end, function()
                         "Если выкл — хранилище будет навешено только на карты, помеченные ПКМ.")
             end
 
-            if imgui.Checkbox(u8 "Проверять смазку при старте", imcfg.improveCheckOilsOnStart) then
+            if imgui.ToggleButton(
+                u8 "Проверять смазку при старте##imcfg_improveCheckOilsOnStart",
+                imcfg.improveCheckOilsOnStart) then
                 cfg.improveCheckOilsOnStart = imcfg.improveCheckOilsOnStart[0];
                 save()
             end
             imgui.Hint("Через /stats. Если выкл — стартует без проверки.")
 
-            if imgui.Checkbox(
-                u8 "Улучшать хранилище (вместо производительности)",
+            if imgui.ToggleButton(
+                u8 "Улучшать хранилище (вместо производительности)##imcfg_improveUseStorageUpgrade",
                 imcfg.improveUseStorageUpgrade) then
                 cfg.improveUseStorageUpgrade = imcfg.improveUseStorageUpgrade[0]
                 data.improve.useStorageUpgrade = cfg.improveUseStorageUpgrade
@@ -6790,7 +7044,7 @@ end, function()
 
             if not cfg.improveMenuAll and cardCount > 0 then
                 imgui.TextColoredRGB(
-                    "{808080}Кликни по карте, чтобы выбрать её для заточки:")
+                    "{808080}Кликни по карте, чтобы выбрать е для заточки:")
             end
 
             if cardCount > 0 then
@@ -6901,7 +7155,7 @@ end, function()
                             not (cfg.improveMenuAll and cfg.improveStorageAfterAll) then
                             imgui.BeginTooltip()
                             imgui.TextColoredRGB(
-                                "{808080}ПКМ — пометить как «только хранилище».")
+                                "{808080}ПКМ — пометить как «только хранилище.")
                             if wantsStorage then
                                 imgui.TextColoredRGB(
                                     "{BEF781}На эту карту будет навешено хранилище.")
@@ -7030,1537 +7284,1561 @@ end)
 
 -- окно настроек
 local _fixDisabledBuf = nil
-imgui.OnFrame(function()
-    return data.showSettingsWindow[0]
-end, function(self)
-    applyStyle()
-    local sw, sh = getScreenResolution()
-    imgui.SetNextWindowSizeConstraints(imgui.ImVec2(420, 50), imgui.ImVec2(420, sh - 40))
-    imgui.SetNextWindowPos(imgui.ImVec2(sw / 2 + 520, sh / 2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5, 0.5))
+local settingsSidebarAnimation = {
+    width = nil,
+    lastTime = 0
+}
+function renderSettingsPage()
+    local imStyle = imgui.GetStyle()
+    local winW = imgui.GetWindowWidth()
 
-    if imgui.Begin("##settingsWin", data.showSettingsWindow,
-        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize +
-            imgui.WindowFlags.NoScrollbar + 64) then
-        local imStyle = imgui.GetStyle()
-        local winW = imgui.GetWindowWidth()
+    imgui.Text(fa.GEAR)
+    imgui.SameLine(0, 8)
+    imgui.TextColoredRGB("{FFFFFF}Настройки")
+    imgui.Separator()
 
-        imgui.SetCursorPosY(imStyle.ItemSpacing.y)
-        local titleIcon = fa.GEAR
-        local titleText = u8 "Настройки"
-        local totalTitleW = imgui.CalcTextSize(titleIcon).x + 8 + imgui.CalcTextSize(titleText).x
-        imgui.SetCursorPos(imgui.ImVec2((winW - totalTitleW) / 2, imStyle.ItemSpacing.y + 3))
-        imgui.Text(titleIcon)
-        imgui.SameLine(0, 8)
-        imgui.SetCursorPosY(imStyle.ItemSpacing.y + 3)
-        imgui.TextColoredRGB("{FFFFFF}Настройки")
+    local tabs = {{
+        label = "Общее",
+        icon = fa.SLIDERS
+    }, {
+        label = "Фермы",
+        icon = fa.HOUSE
+    }, {
+        label = "Авто",
+        icon = fa.WAND_MAGIC_SPARKLES
+    }, {
+        label = "Прочее",
+        icon = fa.GEAR
+    }}
+    if cfg.debug then
+        table.insert(tabs, {
+            label = "Отладка",
+            icon = fa.BUG
+        })
+    end
 
-        imgui.SetCursorPos(imgui.ImVec2(winW - 50 - imStyle.ItemSpacing.x, imStyle.ItemSpacing.y))
-        if imgui.Button(fa.XMARK .. "##settClose", imgui.ImVec2(40, 22)) then
-            data.showSettingsWindow[0] = false
+    local tabCount = #tabs
+    if data.settingsTab >= tabCount then
+        data.settingsTab = 0
+    end
+
+    local settingsHeight = imgui.GetContentRegionAvail().y
+    local targetNavW = data.settingsSidebarCollapsed and 48 or 165
+    local now = os.clock()
+    local delta = settingsSidebarAnimation.lastTime > 0 and math.min(now - settingsSidebarAnimation.lastTime, 0.05) or 0
+    settingsSidebarAnimation.lastTime = now
+    if not settingsSidebarAnimation.width then
+        settingsSidebarAnimation.width = targetNavW
+    else
+        local blend = 1 - math.exp(-delta * 15)
+        settingsSidebarAnimation.width =
+            settingsSidebarAnimation.width + (targetNavW - settingsSidebarAnimation.width) * blend
+        if math.abs(settingsSidebarAnimation.width - targetNavW) < 0.1 then
+            settingsSidebarAnimation.width = targetNavW
         end
-        imgui.Hint("Закрыть настройки")
-        imgui.Separator()
+    end
+    local navW = settingsSidebarAnimation.width
+    local collapsedVisual = navW < 100
+    local gap = 10
+    local windowBg = imStyle.Colors[imgui.Col.WindowBg]
+    local separator = imStyle.Colors[imgui.Col.Separator]
 
-        local tabs = {u8 "Общее", u8 "Фермы", u8 "Авто", u8 "Прочее", u8 "Помощь"}
-        if cfg.debug then
-            table.insert(tabs, u8 "Отладка")
+    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(windowBg.x, windowBg.y, windowBg.z, windowBg.w))
+    imgui.BeginChild("##settings_categories", imgui.ImVec2(navW, settingsHeight), false)
+    imgui.PopStyleColor()
+    local collapseIcon = collapsedVisual and fa.ANGLES_RIGHT or fa.ANGLES_LEFT
+    if imgui.Button(collapseIcon .. "##settings_sidebar_toggle", imgui.ImVec2(-1, 30)) then
+        data.settingsSidebarCollapsed = not data.settingsSidebarCollapsed
+    end
+    imgui.Hint(collapsedVisual and "Развернуть категории" or "Свернуть категории")
+    imgui.Spacing()
+    renderAnimatedVerticalTabHighlight("settings_main", data.settingsTab, imgui.GetContentRegionAvail().x, 34,
+        imStyle.ItemSpacing.y)
+    for i, tab in ipairs(tabs) do
+        local active = data.settingsTab == i - 1
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.09, 0.10, 0.14, 0.42))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.19, 0.25, 0.85))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.23, 0.29, 0.90))
+        local categoryLabel = collapsedVisual and tab.icon or (tab.icon .. "  " .. u8(tab.label))
+        if imgui.Button(categoryLabel .. "##settings_category_" .. i, imgui.ImVec2(-1, 34)) then
+            data.settingsTab = i - 1
+            imgui.ScrollToPosition("settings_scroll_" .. data.settingsTab, 0, 220)
         end
-
-        local tabCount = #tabs
-        local tabW = (winW - imStyle.WindowPadding.x * 2 - imStyle.ItemSpacing.x * (tabCount - 1)) / tabCount
-
-        if data.settingsTab >= tabCount then
-            data.settingsTab = 0
+        imgui.PopStyleColor(3)
+        if collapsedVisual then
+            imgui.Hint(tab.label)
         end
+    end
+    imgui.EndChild()
 
-        for i, label in ipairs(tabs) do
-            if i > 1 then
-                imgui.SameLine(0, imStyle.ItemSpacing.x)
+    imgui.SameLine(0, gap)
+    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(separator.x, separator.y, separator.z, separator.w))
+    imgui.BeginChild("##settings_separator", imgui.ImVec2(1, settingsHeight), false,
+        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+    imgui.EndChild()
+    imgui.PopStyleColor()
+
+    imgui.SameLine(0, gap)
+    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(windowBg.x, windowBg.y, windowBg.z, windowBg.w))
+    imgui.BeginChild("##settings_content", imgui.ImVec2(0, settingsHeight), false, imgui.WindowFlags.NoScrollWithMouse)
+    imgui.PopStyleColor()
+    local blockSettingsWheel = false
+    do
+        -- Вкладка 0: Общее
+        if data.settingsTab == 0 then
+            if imgui.ToggleButton(u8 "Тихий режим##imcfg_silentMode", imcfg.silentMode) then
+                cfg.silentMode = imcfg.silentMode[0];
+                save()
             end
-            imgui.PushStyleColor(imgui.Col.Button, data.settingsTab == i - 1 and imgui.ImVec4(0.15, 0.22, 0.35, 1) or
-                imgui.ImVec4(0.09, 0.10, 0.14, 1))
-            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.25, 0.40, 1))
-            imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.20, 0.28, 0.45, 1))
-            if imgui.Button(label, imgui.ImVec2(tabW, 26)) then
-                data.settingsTab = i - 1
-            end
-            imgui.PopStyleColor(3)
-        end
-        imgui.Separator()
-        imgui.Spacing()
+            imgui.Hint("Отключает все сообщения скрипта в чат.")
 
-        imgui.PushStyleColor(imgui.Col.WindowBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
-        do
-            imgui.Scroller("settings_scroll", 30, 300, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
 
-            -- Вкладка 0: Общее
-            if data.settingsTab == 0 then
-                if imgui.Checkbox(u8 "Тихий режим", imcfg.silentMode) then
-                    cfg.silentMode = imcfg.silentMode[0];
+            if UPDATE_CHECK_URL ~= nil then
+                if imgui.ToggleButton(
+                    u8 "Проверять обновления при запуске##imcfg_checkForUpdates",
+                    imcfg.checkForUpdates) then
+                    cfg.checkForUpdates = imcfg.checkForUpdates[0];
                     save()
                 end
-                imgui.Hint("Отключает все сообщения скрипта в чат.")
+                imgui.Hint(
+                    "Автоматически проверять наличие новых версий скрипта при запуске.\n")
 
-                if imgui.Checkbox(u8 "Старый вид (диалог SAMP)", imcfg.useDialogMode) then
-                    cfg.useDialogMode = imcfg.useDialogMode[0];
-                    save()
-                    if cfg.useDialogMode then
-                        sampSendChat('/flashminer')
-                        data.showLogsWindow[0] = false
+                if updateState.hasUpdate then
+                    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.85, 0.2, 1.0))
+                    if imgui.Selectable(fa.ARROW_UP_FROM_BRACKET ..
+                                            u8(
+                            string.format("  Установить обновление %s",
+                                updateState.latestVersion or "")), false) then
+                        updateState.showPopup[0] = true
                         data.showSettingsWindow[0] = false
                     end
-                end
-                imgui.Hint(
-                    "Добавляет пункты в стандартный диалог SAMP вместо отдельного окна.")
-
-                imgui.Spacing()
-                imgui.Separator()
-                imgui.Spacing()
-
-                if UPDATE_CHECK_URL ~= nil then
-                    if imgui.Checkbox(u8 "Проверять обновления при запуске",
-                        imcfg.checkForUpdates) then
-                        cfg.checkForUpdates = imcfg.checkForUpdates[0];
-                        save()
-                    end
-                    imgui.Hint(
-                        "Автоматически проверять наличие новых версий скрипта при запуске.\n")
-
-                    if updateState.hasUpdate then
-                        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.85, 0.2, 1.0))
-                        if imgui.Selectable(fa.ARROW_UP_FROM_BRACKET ..
-                                                u8(
-                                string.format("  Установить обновление %s",
-                                    updateState.latestVersion or "")), false) then
-                            updateState.showPopup[0] = true
-                            data.showSettingsWindow[0] = false
-                        end
-                        imgui.PopStyleColor()
-                        imgui.Hint("{FFE133}Доступна новая версия скрипта!\n\n" ..
-                                       "{FFFFFF}Нажмите чтобы открыть окно обновления.\n" ..
-                                       "{808080}Текущая: " .. script.this.version .. "\n" ..
-                                       "{808080}Новая: " .. (updateState.latestVersion or "?"))
-                    end
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-                end
-
-                if imgui.Selectable(u8 "Просмотр логов", false) then
-                    data.showLogsWindow[0] = true
-                    data.showSettingsWindow[0] = false
-                end
-                if imgui.Selectable(u8 "Сбросить статистику дохода", false) then
-                    data.statsResetConfirm = true
-                    data.statsResetTimer = os.clock()
-                end
-
-                imgui.Spacing()
-                imgui.Separator()
-                imgui.Spacing()
-
-                if imgui.Selectable(u8 "Перезагрузить скрипт", false) then
-                    cfg.isReloaded = true;
-                    save();
-                    thisScript():reload()
-                end
-                if imgui.Selectable(u8 "Сбросить все настройки", false) then
-                    data.settingsResetConfirm = true
-                    data.settingsResetTimer = os.clock()
-                end
-                imgui.Spacing()
-                imgui.TextDisabled(u8("v" .. script.this.version))
-
-                -- Вкладка 1: Фермы
-            elseif data.settingsTab == 1 then
-                if not cfg.useDialogMode and not data.isRodina then
-                    imgui.TextColoredRGB("{87CEFA}Баланс дома:")
-                    imgui.PushItemWidth(-1)
-                    if imgui.SliderInt("##targetBalance", imcfg.targetHouseBalance, 5000000, 60000000,
-                        u8("$" .. utils.formatNumber(imcfg.targetHouseBalance[0]))) then
-                        local v = math.floor(imcfg.targetHouseBalance[0] / 100000 + 0.5) * 100000
-                        cfg.targetHouseBalance = v;
-                        imcfg.targetHouseBalance[0] = v;
-                        save()
-                    end
-                    imgui.PopItemWidth()
-                    imgui.Hint(
-                        "Пополнять дом если баланс упадёт ниже этого значения.")
-
-                    if imgui.Checkbox(u8 "Только пополнение баланса", imcfg.useSimpleTopUp) then
-                        cfg.useSimpleTopUp = imcfg.useSimpleTopUp[0];
-                        save()
-                    end
-                    imgui.Hint(
-                        "Быстрый режим: кнопка обслуживания только пополнит баланс,\nне заходя в каждую стойку. Действия ниже при этом игнорируются.")
-
-                    imgui.Spacing()
-                    imgui.Text(fa.GEAR)
-                    imgui.SameLine(0, 6)
-                    imgui.TextColoredRGB("{87CEFA}Что делать кнопкой обслуживания")
-                    imgui.Hint(
-                        "Выберите действия для кнопки «Авто-обслуживание».\nИх можно комбинировать в любом сочетании —\nнапример, только собрать крипту, или\nсобрать и сразу включить видеокарты.")
-
-                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                    imgui.BeginChild("##fixActions", imgui.ImVec2(0, 120), true,
-                        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                    if cfg.useSimpleTopUp then
-                        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1))
-                        imgui.PushStyleColor(imgui.Col.CheckMark, imgui.ImVec4(0.5, 0.5, 0.5, 1))
-                        imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.10, 0.10, 0.10, 1))
-                        imgui.PushStyleColor(imgui.Col.FrameBgHovered, imgui.ImVec4(0.10, 0.10, 0.10, 1))
-                        _fixDisabledBuf = _fixDisabledBuf or imgui.new.bool(false)
-                        _fixDisabledBuf[0] = cfg.fixCollectEnabled
-                        imgui.Checkbox(u8 "Собирать крипту", _fixDisabledBuf)
-                        _fixDisabledBuf[0] = cfg.fixSwitchEnabled
-                        imgui.Checkbox(u8 "Включать видеокарты", _fixDisabledBuf)
-                        _fixDisabledBuf[0] = cfg.fixTopUpEnabled
-                        imgui.Checkbox(u8 "Пополнять баланс", _fixDisabledBuf)
-                        imgui.PopStyleColor(4)
-                        imgui.Hint(
-                            "Недоступно: включён режим «Только пополнение баланса».")
-                    else
-                        if imgui.Checkbox(u8 "Собирать крипту", imcfg.fixCollectEnabled) then
-                            cfg.fixCollectEnabled = imcfg.fixCollectEnabled[0];
-                            save()
-                        end
-                        imgui.Hint("Снимать криптовалюту со всех домов.")
-                        if imgui.Checkbox(u8 "Включать видеокарты", imcfg.fixSwitchEnabled) then
-                            cfg.fixSwitchEnabled = imcfg.fixSwitchEnabled[0];
-                            save()
-                        end
-                        imgui.Hint("Включать выключенные карты.")
-                        if imgui.Checkbox(u8 "Пополнять баланс", imcfg.fixTopUpEnabled) then
-                            cfg.fixTopUpEnabled = imcfg.fixTopUpEnabled[0];
-                            save()
-                        end
-                        imgui.Hint("Пополнять баланс домов до целевого значения.")
-                    end
-                    imgui.EndChild()
                     imgui.PopStyleColor()
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Охлаждение:")
-                    imgui.PushItemWidth(-1)
-                    if imgui.SliderInt("##coolantPercentSettings", imcfg.useCoolantPercent, 1, 100, u8 "%d%%") then
-                        cfg.useCoolantPercent = imcfg.useCoolantPercent[0];
-                        save()
-                    end
-                    imgui.PopItemWidth()
-                    imgui.Hint("Заливать если уровень ниже этого порога.")
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Автоматизация стойки:")
-
-                    if imgui.Checkbox(u8 "Авто-заливка при открытии стойки",
-                        imcfg.fixCoolantEnabled) then
-                        cfg.fixCoolantEnabled = imcfg.fixCoolantEnabled[0];
-                        save()
-                    end
-                    imgui.Hint(
-                        "Автоматически заливать жидкость при открытии стойки видеокарт.\nНе работает через Флешку Майнера.")
-
-                    if imgui.Checkbox(u8 "Авто-включение карт после заливки",
-                        imcfg.autoEnableCards) then
-                        cfg.autoEnableCards = imcfg.autoEnableCards[0]
-                        if cfg.autoEnableCards then
-                            cfg.autoEnableCardsOnOpen = false;
-                            imcfg.autoEnableCardsOnOpen[0] = false
-                        end
-                        save()
-                    end
-                    imgui.Hint(
-                        "После заливки жидкости автоматически включать выключенные карты.\nНе совместимо с 'Авто-включение при открытии стойки'.")
-
-                    if imgui.Checkbox(u8 "Авто-включение карт при открытии стойки",
-                        imcfg.autoEnableCardsOnOpen) then
-                        cfg.autoEnableCardsOnOpen = imcfg.autoEnableCardsOnOpen[0]
-                        if cfg.autoEnableCardsOnOpen then
-                            cfg.autoEnableCards = false;
-                            imcfg.autoEnableCards[0] = false
-                        end
-                        save()
-                    end
-                    imgui.Hint(
-                        "Включать выключенные карты при открытии стойки,\n" ..
-                            "независимо от заливки жидкости.\n" ..
-                            "Не совместимо с 'Авто-включение после заливки'.\n")
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Предупреждения:")
-                    imgui.Text(u8 "Порог баланса (предупреждение):")
-                    imgui.PushItemWidth(-1)
-                    if imgui.SliderInt("##minBalanceWarning", imcfg.minBalanceWarning, 1000000, 15000000,
-                        u8("$" .. utils.formatNumber(imcfg.minBalanceWarning[0]))) then
-                        local v = math.floor(imcfg.minBalanceWarning[0] / 500000 + 0.5) * 500000
-                        cfg.minBalanceWarning = v;
-                        imcfg.minBalanceWarning[0] = v;
-                        save()
-                    end
-                    imgui.PopItemWidth()
-                    imgui.Hint(
-                        "Карточка дома станет жёлтой если баланс ниже этого значения.")
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Сбор крипты:")
-                    imgui.Text(u8 "Собирать если накопилось не менее:")
-                    imgui.PushItemWidth(-1)
-                    if imgui.SliderInt("##collectOnlyIfMin", imcfg.collectOnlyIfMin, 0, 180,
-                        imcfg.collectOnlyIfMin[0] == 0 and u8 "Любое кол-во" or
-                            u8(string.format("от %d BTC", imcfg.collectOnlyIfMin[0]))) then
-                        cfg.collectOnlyIfMin = imcfg.collectOnlyIfMin[0];
-                        save()
-                    end
-                    imgui.PopItemWidth()
-                    imgui.Hint(
-                        "0 = собирать всегда (от 1 BTC).\nПри сборе пропускать дома где меньше N BTC.\n" ..
-                            "Учтите, что если на ферме будет например 5 карт,\n" ..
-                            "а значение стоит на 180, то этот дом никогда не будет собираться.")
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    if imgui.Selectable(u8 "Проверить подвалы", false) then
-                        if not data.working then
-                            local task = buildTaskTable('scanBasements')
-                            runTaskAndReopenDialog(function()
-                                task:run(nil)
-                            end)
-                            data.showSettingsWindow[0] = false
-                        else
-                            utils.addChat(
-                                "{F78181}Дождитесь завершения текущей операции.")
-                        end
-                    end
-                    imgui.Hint("Сканирование домов на наличие подвала.")
-                else
-                    imgui.Spacing()
-                    imgui.TextColoredRGB("{808080}Недоступно в текущем режиме.")
+                    imgui.Hint("{FFE133}Доступна новая версия скрипта!\n\n" ..
+                                   "{FFFFFF}Нажмите чтобы открыть окно обновления.\n" ..
+                                   "{808080}Текущая: " .. script.this.version .. "\n" .. "{808080}Новая: " ..
+                                   (updateState.latestVersion or "?"))
                 end
-
-                -- Вкладка 2: Автосбор + Уведомления
-            elseif data.settingsTab == 2 then
-                if not cfg.useDialogMode and not data.isRodina then
-                    imgui.TextColoredRGB("{FF6B6B}Авто")
-
-                    if imgui.Checkbox(u8 "Включить авто-функции", imcfg.cheatModeEnabled) then
-                        cfg.cheatModeEnabled = imcfg.cheatModeEnabled[0]
-                        if not cfg.cheatModeEnabled then
-                            cfg.autoCollectEnabled = false;
-                            imcfg.autoCollectEnabled[0] = false
-                            cfg.smartCollectEnabled = false;
-                            imcfg.smartCollectEnabled[0] = false
-                            cfg.autoPayTaxesEnabled = false;
-                            imcfg.autoPayTaxesEnabled[0] = false
-                            cfg.autoTopUpEnabled = false;
-                            imcfg.autoTopUpEnabled[0] = false
-                        end
-                        save()
-                    end
-                    imgui.Hint("{FF6B6B} ВНИМАНИЕ!\n" ..
-                                   "Эти функции могут быть запрещены на вашем сервере!\n" ..
-                                   "Перед использованием уточните у администрации,\n" ..
-                                   "не нарушает ли это правила сервера.\n\n" ..
-                                   "Используйте на свой страх и риск.\n" ..
-                                   "Автор не несёт ответственности за блокировки\n" ..
-                                   "или иные проблемы, связанные с их использованием.\n\n")
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    do
-                        local subTabs = {u8 "Автосбор", u8 "Финансы", u8 "Уведомления"}
-                        local subTabCount = #subTabs
-                        local subTabW =
-                            (winW - imStyle.WindowPadding.x * 2 - imStyle.ItemSpacing.x * (subTabCount - 1)) /
-                                subTabCount
-
-                        for si, slabel in ipairs(subTabs) do
-                            if si > 1 then
-                                imgui.SameLine(0, imStyle.ItemSpacing.x)
-                            end
-                            imgui.PushStyleColor(imgui.Col.Button, data.cheatSubTab == si - 1 and
-                                imgui.ImVec4(0.18, 0.28, 0.45, 1) or imgui.ImVec4(0.11, 0.12, 0.16, 1))
-                            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20, 0.30, 0.48, 1))
-                            imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.32, 0.50, 1))
-                            if imgui.Button(slabel .. "##cheatSub", imgui.ImVec2(subTabW, 30)) then
-                                data.cheatSubTab = si - 1
-                            end
-                            imgui.PopStyleColor(3)
-                        end
-                        imgui.Spacing()
-
-                        if data.cheatSubTab == 0 then
-                            if not cfg.cheatModeEnabled then
-                                imgui.Spacing()
-                                imgui.TextColoredRGB(
-                                    "{808080}Недоступно. Включите авто-функции выше.")
-                            else
-                                imgui.TextColoredRGB("{87CEFA}Автосбор по расписанию")
-
-                                if imgui.Checkbox(u8 "Включить автосбор по расписанию",
-                                    imcfg.autoCollectEnabled) then
-                                    cfg.autoCollectEnabled = imcfg.autoCollectEnabled[0]
-                                    if cfg.autoCollectEnabled then
-                                        cfg.smartCollectEnabled = false;
-                                        imcfg.smartCollectEnabled[0] = false
-                                        cfg.reminderEnabled = false;
-                                        imcfg.reminderEnabled[0] = false
-                                    end
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "Собирать крипту через равные промежутки времени.")
-
-                                if cfg.autoCollectEnabled then
-                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##autoCSub", imgui.ImVec2(0, 100), true, imgui.WindowFlags
-                                        .NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                                    imgui.PushItemWidth(-1)
-                                    if imgui.SliderInt("##cTimes", imcfg.collectTimesPerDay, 1, 8,
-                                        u8(string.format("%d/день (~%s)", imcfg.collectTimesPerDay[0],
-                                            formatTimeLeft(math.floor(86400 / math.max(1, imcfg.collectTimesPerDay[0])))))) then
-                                        cfg.collectTimesPerDay = imcfg.collectTimesPerDay[0]
-                                        collectTool.resetPendingDelay()
-                                        save()
-                                    end
-                                    imgui.PopItemWidth()
-                                    local tL = collectTool.getTimeUntil()
-                                    if data.pendingCollectLocked then
-                                        local pLeft = data.pendingCollectAt - os.time()
-                                        if pLeft > 0 then
-                                            imgui.TextColoredRGB(string.format(
-                                                "{FFE133}Рандомная задержка: %s", formatTimeLeft(pLeft)))
-                                        end
-                                    end
-                                    if tL > 0 then
-                                        imgui.TextColoredRGB(
-                                            string.format("{808080}До сбора: {FFFFFF}%s", formatTimeLeft(tL)))
-                                    end
-                                    if imgui.Selectable(u8 "Сбросить таймер", false) then
-                                        cfg.lastCollectTime = os.time()
-                                        collectTool.resetPendingDelay()
-                                        save()
-                                    end
-                                    imgui.EndChild()
-                                    imgui.PopStyleColor()
-                                end
-
-                                imgui.Spacing()
-
-                                imgui.TextColoredRGB("{87CEFA}Умный автосбор")
-
-                                if imgui.Checkbox(u8 "Включить умный автосбор",
-                                    imcfg.smartCollectEnabled) then
-                                    cfg.smartCollectEnabled = imcfg.smartCollectEnabled[0]
-                                    if cfg.smartCollectEnabled then
-                                        cfg.autoCollectEnabled = false;
-                                        imcfg.autoCollectEnabled[0] = false
-                                        cfg.reminderEnabled = false;
-                                        imcfg.reminderEnabled[0] = false
-                                    end
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "Собирать когда накопится заданное кол-во BTC.")
-
-                                if cfg.smartCollectEnabled then
-                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##smartCSub", imgui.ImVec2(0, 90), true, imgui.WindowFlags
-                                        .NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                                    local hc = math.max(1, #data.dialogData.flashminer)
-                                    local sMin, sMax = hc * 20, hc * 20 * 8
-                                    if imcfg.smartCollectTarget[0] < sMin then
-                                        imcfg.smartCollectTarget[0] = sMin;
-                                        cfg.smartCollectTarget = sMin
-                                    end
-                                    imgui.PushItemWidth(-1)
-                                    if imgui.SliderInt("##sTgt", imcfg.smartCollectTarget, sMin, sMax,
-                                        u8(string.format("при %d BTC", imcfg.smartCollectTarget[0]))) then
-                                        cfg.smartCollectTarget = imcfg.smartCollectTarget[0]
-                                        collectTool.resetPendingDelay()
-                                        save()
-                                    end
-                                    imgui.PopItemWidth()
-                                    local sB, sD, sOk = 0, 0, false
-                                    for _, h in ipairs(data.dialogData.flashminer) do
-                                        if not houseFilter.shouldSkip(h.house_number) then
-                                            local st = data.houseStatuses[h.house_number]
-                                            if st and st.lastCheck > 0 then
-                                                sOk = true
-                                                sB = sB + (st.earnings and st.earnings.btc or 0) +
-                                                         houseFilter.getDailyIncome(h.house_number) *
-                                                         ((os.time() - st.lastCheck) / 86400)
-                                                sD = sD + houseFilter.getDailyIncome(h.house_number)
-                                            end
-                                        end
-                                    end
-                                    if sOk and sD > 0 then
-                                        local sHL = math.max(0, (cfg.smartCollectTarget - sB) / (sD / 24))
-                                        imgui.TextColoredRGB(string.format(
-                                            "{808080}Накоплено: {BEF781}%d {808080}/ {FFFFFF}%d BTC",
-                                            math.floor(sB), cfg.smartCollectTarget))
-                                        if data.pendingCollectLocked then
-                                            local pLeft = data.pendingCollectAt - os.time()
-                                            if pLeft > 0 then
-                                                imgui.TextColoredRGB(string.format(
-                                                    "{FFE133}Рандомная задержка: %s",
-                                                    formatTimeLeft(pLeft)))
-                                            end
-                                        end
-                                        imgui.TextColoredRGB(
-                                            string.format("{808080}Сбор через: {FFFFFF}%s", sHL <= 0 and
-                                                "уже пора!" or formatTimeLeft(math.floor(sHL * 3600))))
-                                    else
-                                        imgui.TextColoredRGB(
-                                            sOk and "{808080}Нет данных о доходе." or
-                                                "{808080}Откройте /flashminer.")
-                                    end
-                                    imgui.EndChild()
-                                    imgui.PopStyleColor()
-                                end
-
-                                imgui.Spacing()
-
-                                if cfg.autoCollectEnabled or cfg.smartCollectEnabled then
-                                    if imgui.Checkbox(u8 "Включать карты после автосбора",
-                                        imcfg.autoEnableCardsOnCollect) then
-                                        cfg.autoEnableCardsOnCollect = imcfg.autoEnableCardsOnCollect[0];
-                                        save()
-                                    end
-                                    imgui.Hint(
-                                        "Включать выключенные карты сразу после сбора крипты.")
-                                end
-
-                                imgui.Spacing()
-                                imgui.Separator()
-                                imgui.Spacing()
-
-                                imgui.TextColoredRGB("{87CEFA}Рандомная задержка")
-
-                                if imgui.Checkbox(u8 "Добавлять рандомную задержку",
-                                    imcfg.randomDelayEnabled) then
-                                    cfg.randomDelayEnabled = imcfg.randomDelayEnabled[0]
-                                    if not cfg.randomDelayEnabled then
-                                        data.pendingCollectLocked = false
-                                        data.pendingCollectAt = 0
-                                    end
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "Добавляет случайную задержку перед автосбором.")
-
-                                if cfg.randomDelayEnabled then
-                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##rndDelaySub", imgui.ImVec2(0, 80), true, imgui.WindowFlags
-                                        .NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                                    imgui.PushItemWidth(-1)
-                                    if imgui.SliderInt("##rndMin", imcfg.randomDelayMin, 1, imcfg.randomDelayMax[0],
-                                        u8(string.format("от %d мин.", imcfg.randomDelayMin[0]))) then
-                                        cfg.randomDelayMin = imcfg.randomDelayMin[0]
-                                        if cfg.randomDelayMin > cfg.randomDelayMax then
-                                            cfg.randomDelayMax = cfg.randomDelayMin
-                                            imcfg.randomDelayMax[0] = cfg.randomDelayMax
-                                        end
-                                        collectTool.resetPendingDelay()
-                                        save()
-                                    end
-                                    if imgui.SliderInt("##rndMax", imcfg.randomDelayMax, imcfg.randomDelayMin[0], 180,
-                                        u8(string.format("до %d мин.", imcfg.randomDelayMax[0]))) then
-                                        cfg.randomDelayMax = imcfg.randomDelayMax[0]
-                                        if cfg.randomDelayMax < cfg.randomDelayMin then
-                                            cfg.randomDelayMin = cfg.randomDelayMax
-                                            imcfg.randomDelayMin[0] = cfg.randomDelayMin
-                                        end
-                                        collectTool.resetPendingDelay()
-                                        save()
-                                    end
-                                    imgui.PopItemWidth()
-                                    if data.pendingCollectLocked then
-                                        local pLeft = data.pendingCollectAt - os.time()
-                                        if pLeft > 0 then
-                                            imgui.TextColoredRGB(
-                                                string.format("{FFE133}Задержка: %s", formatTimeLeft(pLeft)))
-                                        end
-                                    end
-                                    imgui.EndChild()
-                                    imgui.PopStyleColor()
-                                end
-
-                                imgui.Spacing()
-                                imgui.Separator()
-                                imgui.Spacing()
-
-                                imgui.TextColoredRGB("{87CEFA}Фоновое обновление статусов")
-
-                                if imgui.Checkbox(
-                                    u8 "Периодически обновлять данные домов",
-                                    imcfg.autoRefreshEnabled) then
-                                    cfg.autoRefreshEnabled = imcfg.autoRefreshEnabled[0];
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "Автоматически обновлять статусы домов в фоне.\n" ..
-                                        "Необходимо для корректной работы умного автосбора\n" ..
-                                        "и автосбора без ручного открытия /flashminer.\n\n" ..
-                                        "{808080}Вызывает /flashminer и обновляет данные.")
-
-                                if cfg.autoRefreshEnabled then
-                                    local refreshChildH = 100
-                                    if cfg.refreshPostponeOnDialog then
-                                        refreshChildH = 140
-                                    end
-
-                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##refreshSub", imgui.ImVec2(0, refreshChildH), true,
-                                        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                                    imgui.PushItemWidth(-1)
-                                    if imgui.SliderInt("##refreshInt", imcfg.autoRefreshInterval, 10, 120, u8(
-                                        string.format("каждые %d мин.", imcfg.autoRefreshInterval[0]))) then
-                                        cfg.autoRefreshInterval = imcfg.autoRefreshInterval[0];
-                                        save()
-                                    end
-
-                                    local refLeft = (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) - os.time()
-                                    imgui.TextColoredRGB(refLeft > 0 and
-                                                             string.format(
-                                            "{808080}До обновления: {FFFFFF}%s", formatTimeLeft(refLeft)) or
-                                                             "{BEF781}При следующей проверке!")
-
-                                    imgui.PopItemWidth()
-
-                                    if imgui.Checkbox(u8 "Не прерывать открытый диалог",
-                                        imcfg.refreshPostponeOnDialog) then
-                                        cfg.refreshPostponeOnDialog = imcfg.refreshPostponeOnDialog[0];
-                                        save()
-                                    end
-                                    imgui.Hint(
-                                        "Если у вас открыт любой диалог в момент обновления —\n" ..
-                                            "отложить обновление, чтобы не сбить ваше взаимодействие.\n")
-
-                                    if cfg.refreshPostponeOnDialog then
-                                        imgui.PushItemWidth(-1)
-                                        if imgui.SliderInt("##refreshPostpone", imcfg.refreshPostponeMinutes, 1, 5, u8(
-                                            string.format("отложить на %d мин.",
-                                                imcfg.refreshPostponeMinutes[0]))) then
-                                            cfg.refreshPostponeMinutes = imcfg.refreshPostponeMinutes[0];
-                                            save()
-                                        end
-                                        imgui.PopItemWidth()
-                                    end
-
-                                    local postponed = autoRefreshTool.getPostponedUntil()
-                                    if postponed > os.time() then
-                                        imgui.TextColoredRGB(
-                                            string.format("{FFE133}Отложено: {FFFFFF}%s",
-                                                formatTimeLeft(postponed - os.time())))
-                                    end
-
-                                    imgui.EndChild()
-                                    imgui.PopStyleColor()
-                                end
-                            end -- end else cheatModeEnabled (subtab 0)
-                        elseif data.cheatSubTab == 1 then
-                            if not cfg.cheatModeEnabled then
-                                imgui.Spacing()
-                                imgui.TextColoredRGB(
-                                    "{808080}Недоступно. Включите авто-функции выше.")
-                            else
-                                imgui.TextColoredRGB("{87CEFA}Автооплата налогов")
-
-                                if imgui.Checkbox(u8 "Включить автооплату налогов",
-                                    imcfg.autoPayTaxesEnabled) then
-                                    cfg.autoPayTaxesEnabled = imcfg.autoPayTaxesEnabled[0];
-                                    save()
-                                end
-                                imgui.Hint("Автоматическая оплата всех налогов.\n" ..
-                                               "{FFE133}Требуется ADD VIP.")
-
-                                if cfg.autoPayTaxesEnabled then
-                                    local taxChildH = 85
-                                    if cfg.autoPayTaxesByTimer then
-                                        taxChildH = 135
-                                    end
-
-                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##taxSub", imgui.ImVec2(0, taxChildH), true, imgui.WindowFlags
-                                        .NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-
-                                    if imgui.Checkbox(u8 "Вместе с автосбором",
-                                        imcfg.autoPayTaxesWithCollect) then
-                                        cfg.autoPayTaxesWithCollect = imcfg.autoPayTaxesWithCollect[0]
-                                        if cfg.autoPayTaxesWithCollect then
-                                            cfg.autoPayTaxesByTimer = false;
-                                            imcfg.autoPayTaxesByTimer[0] = false
-                                        end
-                                        save()
-                                    end
-                                    imgui.Hint(
-                                        "Оплачивать налоги после каждого автосбора крипты.")
-
-                                    if imgui.Checkbox(u8 "По таймеру", imcfg.autoPayTaxesByTimer) then
-                                        cfg.autoPayTaxesByTimer = imcfg.autoPayTaxesByTimer[0]
-                                        if cfg.autoPayTaxesByTimer then
-                                            cfg.autoPayTaxesWithCollect = false;
-                                            imcfg.autoPayTaxesWithCollect[0] = false
-                                        end
-                                        save()
-                                    end
-                                    imgui.Hint(
-                                        "Оплачивать налоги через заданный интервал.")
-
-                                    if cfg.autoPayTaxesByTimer then
-                                        imgui.PushItemWidth(-1)
-                                        if imgui.SliderInt("##taxInt", imcfg.autoPayTaxesInterval, 1, 48, u8(
-                                            string.format("каждые %d ч.", imcfg.autoPayTaxesInterval[0]))) then
-                                            cfg.autoPayTaxesInterval = imcfg.autoPayTaxesInterval[0];
-                                            save()
-                                        end
-                                        imgui.PopItemWidth()
-                                        local taxLeft = (cfg.lastTaxPayTime + cfg.autoPayTaxesInterval * 3600) -
-                                                            os.time()
-                                        imgui.TextColoredRGB(taxLeft > 0 and
-                                                                 string.format("{808080}До оплаты: {FFFFFF}%s",
-                                                formatTimeLeft(taxLeft)) or
-                                                                 "{BEF781}Оплата при следующей проверке!")
-                                    end
-
-                                    imgui.EndChild()
-                                    imgui.PopStyleColor()
-                                end
-
-                                imgui.Spacing()
-                                imgui.Separator()
-                                imgui.Spacing()
-
-                                imgui.TextColoredRGB("{87CEFA}Автопополнение баланса")
-
-                                if imgui.Checkbox(u8 "Включить автопополнение",
-                                    imcfg.autoTopUpEnabled) then
-                                    cfg.autoTopUpEnabled = imcfg.autoTopUpEnabled[0];
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "Пополнять баланс домов до целевого значения.\n" ..
-                                        "{808080}Целевой баланс — на вкладке 'Фермы'.")
-
-                                if cfg.autoTopUpEnabled then
-                                    local topUpChildH = 150
-                                    if cfg.autoTopUpByThreshold then
-                                        topUpChildH = topUpChildH + 28
-                                    end
-                                    if cfg.autoTopUpByTimer then
-                                        topUpChildH = topUpChildH + 48
-                                    end
-
-                                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                    imgui.BeginChild("##topUpSub", imgui.ImVec2(0, topUpChildH), true, imgui.WindowFlags
-                                        .NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-
-                                    imgui.TextColoredRGB(string.format("{808080}Цель: {FFD700}$%s",
-                                        utils.formatNumber(cfg.targetHouseBalance)))
-                                    imgui.Spacing()
-
-                                    if imgui.Checkbox(u8 "Вместе с автосбором",
-                                        imcfg.autoTopUpWithCollect) then
-                                        cfg.autoTopUpWithCollect = imcfg.autoTopUpWithCollect[0]
-                                        if cfg.autoTopUpWithCollect then
-                                            cfg.autoTopUpByTimer = false;
-                                            imcfg.autoTopUpByTimer[0] = false
-                                            cfg.autoTopUpByThreshold = false;
-                                            imcfg.autoTopUpByThreshold[0] = false
-                                        end
-                                        save()
-                                    end
-                                    imgui.Hint(
-                                        "Пополнять после каждого автосбора крипты.")
-
-                                    if imgui.Checkbox(u8 "При низком балансе",
-                                        imcfg.autoTopUpByThreshold) then
-                                        cfg.autoTopUpByThreshold = imcfg.autoTopUpByThreshold[0]
-                                        if cfg.autoTopUpByThreshold then
-                                            cfg.autoTopUpWithCollect = false;
-                                            imcfg.autoTopUpWithCollect[0] = false
-                                            cfg.autoTopUpByTimer = false;
-                                            imcfg.autoTopUpByTimer[0] = false
-                                        end
-                                        save()
-                                    end
-                                    imgui.Hint(
-                                        "Пополнять когда баланс любого дома упадёт ниже порога.")
-
-                                    if cfg.autoTopUpByThreshold then
-                                        imgui.PushItemWidth(-1)
-                                        if imgui.SliderInt("##topUpThr", imcfg.autoTopUpThreshold, 500000, 20000000,
-                                            u8("$" .. utils.formatNumber(imcfg.autoTopUpThreshold[0]))) then
-                                            local v = math.floor(imcfg.autoTopUpThreshold[0] / 100000 + 0.5) * 100000
-                                            cfg.autoTopUpThreshold = v;
-                                            imcfg.autoTopUpThreshold[0] = v;
-                                            save()
-                                        end
-                                        imgui.PopItemWidth()
-                                    end
-
-                                    if imgui.Checkbox(u8 "По таймеру", imcfg.autoTopUpByTimer) then
-                                        cfg.autoTopUpByTimer = imcfg.autoTopUpByTimer[0]
-                                        if cfg.autoTopUpByTimer then
-                                            cfg.autoTopUpWithCollect = false;
-                                            imcfg.autoTopUpWithCollect[0] = false
-                                            cfg.autoTopUpByThreshold = false;
-                                            imcfg.autoTopUpByThreshold[0] = false
-                                        end
-                                        save()
-                                    end
-                                    imgui.Hint(
-                                        "Пополнять баланс через заданный интервал.")
-
-                                    if cfg.autoTopUpByTimer then
-                                        imgui.PushItemWidth(-1)
-                                        if imgui.SliderInt("##topUpInt", imcfg.autoTopUpTimerInterval, 1, 48, u8(
-                                            string.format("каждые %d ч.", imcfg.autoTopUpTimerInterval[0]))) then
-                                            cfg.autoTopUpTimerInterval = imcfg.autoTopUpTimerInterval[0];
-                                            save()
-                                        end
-                                        imgui.PopItemWidth()
-                                        local tuLeft = (cfg.lastAutoTopUpTime + cfg.autoTopUpTimerInterval * 3600) -
-                                                           os.time()
-                                        imgui.TextColoredRGB(tuLeft > 0 and
-                                                                 string.format(
-                                                "{808080}До пополнения: {FFFFFF}%s", formatTimeLeft(tuLeft)) or
-                                                                 "{BEF781}При следующей проверке!")
-                                    end
-
-                                    imgui.EndChild()
-                                    imgui.PopStyleColor()
-                                end
-                            end -- end else cheatModeEnabled (subtab 1)
-                        elseif data.cheatSubTab == 2 then
-                            imgui.TextColoredRGB("{87CEFA}Напоминания")
-
-                            local blockReminder = cfg.cheatModeEnabled and
-                                                      (cfg.autoCollectEnabled or cfg.smartCollectEnabled)
-
-                            if blockReminder then
-                                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1))
-                                imgui.PushStyleColor(imgui.Col.CheckMark, imgui.ImVec4(0.5, 0.5, 0.5, 1))
-                                imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.10, 0.10, 0.10, 1))
-                                imgui.PushStyleColor(imgui.Col.FrameBgHovered, imgui.ImVec4(0.10, 0.10, 0.10, 1))
-                                local dummy = imgui.new.bool(false)
-                                imgui.Checkbox(u8 "Напоминание о BTC", dummy)
-                                imgui.PopStyleColor(4)
-                                imgui.Hint(
-                                    "Недоступно пока включён автосбор\nили умный автосбор.")
-                            else
-                                if imgui.Checkbox(u8 "Напоминание о BTC", imcfg.reminderEnabled) then
-                                    cfg.reminderEnabled = imcfg.reminderEnabled[0];
-                                    save()
-                                end
-                                imgui.Hint("Показывать окно при достижении порога BTC.")
-                            end
-
-                            if cfg.reminderEnabled and not blockReminder then
-                                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                                imgui.BeginChild("##remSub", imgui.ImVec2(0, 140), true,
-                                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                                local estBtc, hasData = estimateTotalBTC()
-                                if hasData then
-                                    local fr = math.min(estBtc / math.max(cfg.btcThreshold, 1), 1.0)
-                                    local c = fr >= 1.0 and "{BEF781}" or (fr >= 0.7 and "{FFE133}" or "{FF6B6B}")
-                                    imgui.TextColoredRGB(string.format(
-                                        "{808080}Сейчас: %s%d {808080}/ {FFFFFF}%d BTC", c, math.floor(estBtc),
-                                        cfg.btcThreshold))
-                                end
-                                imgui.PushItemWidth(-1)
-                                if imgui.SliderInt("##btcThr", imcfg.btcThreshold, 10, 2000,
-                                    u8(string.format("порог: %d BTC", imcfg.btcThreshold[0]))) then
-                                    cfg.btcThreshold = imcfg.btcThreshold[0];
-                                    save()
-                                end
-                                if imgui.SliderInt("##remInt", imcfg.reminderInterval, 1, 60, u8(
-                                    string.format("каждые %d мин.", imcfg.reminderInterval[0]))) then
-                                    cfg.reminderInterval = imcfg.reminderInterval[0];
-                                    save()
-                                end
-                                if imgui.SliderInt("##nDur", imcfg.notifyShowDuration, 3, 30, u8(
-                                    string.format("показывать %d сек.", imcfg.notifyShowDuration[0]))) then
-                                    cfg.notifyShowDuration = imcfg.notifyShowDuration[0];
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "Как долго показывать всплывающее\nуведомление.")
-                                imgui.PopItemWidth()
-                                imgui.EndChild()
-                                imgui.PopStyleColor()
-                            end
-
-                            if cfg.cheatModeEnabled then
-                                imgui.Spacing()
-                                imgui.Separator()
-                                imgui.Spacing()
-
-                                imgui.TextColoredRGB("{87CEFA}Окно уведомлений:")
-                                if imgui.Checkbox(u8 "Уведомления автосбора",
-                                    imcfg.notifyAutoCollectEnabled) then
-                                    cfg.notifyAutoCollectEnabled = imcfg.notifyAutoCollectEnabled[0];
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "Показывать окно уведомлений для автосбора\nи умного автосбора (обратный отсчёт, статус сбора).")
-
-                                imgui.PushItemWidth(-1)
-                                if imgui.SliderInt("##nBefore", imcfg.notifyBeforeSec, 30, 600,
-                                    u8(string.format("за %d сек.", imcfg.notifyBeforeSec[0]))) then
-                                    cfg.notifyBeforeSec = imcfg.notifyBeforeSec[0];
-                                    save()
-                                end
-                                imgui.Hint(
-                                    "За сколько секунд до автосбора показывать\nокно с обратным отсчётом.")
-
-                                imgui.PopItemWidth()
-                                imgui.Spacing()
-                                imgui.Separator()
-                                imgui.TextColoredRGB("{87CEFA}Предпросмотр")
-                                if imgui.Selectable(u8 "Предпросмотр окна", false) then
-                                    data.notifyWindow.btcAmount = 150
-                                    data.notifyWindow.mode = 'reminder'
-                                    data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
-                                    data.notifyWindow.isPreview = true
-                                    data.notifyWindow.show[0] = true
-                                end
-                                imgui.Hint(
-                                    "Показать пример окна уведомления.\nПеретащите его мышью — позиция\nавтоматически сохранится.\nСпустя несколько секунд окно пропадёт.")
-                            end
-                        end
-                    end
-                else
-                    imgui.Spacing()
-                    imgui.TextColoredRGB("{808080}Недоступно в текущем режиме.")
-                end
-            elseif data.settingsTab == 3 then
-                imgui.TextColoredRGB("{87CEFA}Пауза на PayDay")
-                if imgui.Checkbox(u8 "Приостанавливать действия на PayDay",
-                    imcfg.pauseOnPayday) then
-                    cfg.pauseOnPayday = imcfg.pauseOnPayday[0];
-                    save()
-                end
-                imgui.Hint("Делать паузу во время PayDay.")
 
                 imgui.Spacing()
                 imgui.Separator()
                 imgui.Spacing()
+            end
 
-                imgui.TextColoredRGB("{87CEFA}Ожидание подключения:")
+            if imgui.Selectable(u8 "Просмотр логов", false) then
+                selectMainMenuTab("logs")
+            end
+            if imgui.Selectable(u8 "Сбросить статистику дохода", false) then
+                data.statsResetConfirm = true
+                data.statsResetTimer = os.clock()
+            end
 
-                if imgui.Checkbox(u8 "Ждать подключения к серверу", imcfg.waitForConnection) then
-                    cfg.waitForConnection = imcfg.waitForConnection[0];
-                    save()
-                end
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            if imgui.Selectable(u8 "Перезагрузить скрипт", false) then
+                cfg.isReloaded = true;
+                save();
+                thisScript():reload()
+            end
+            if imgui.Selectable(u8 "Сбросить все настройки", false) then
+                data.settingsResetConfirm = true
+                data.settingsResetTimer = os.clock()
+            end
+            imgui.Spacing()
+            imgui.TextDisabled(u8("v" .. script.this.version))
+
+            -- Вкладка 1: Фермы
+        elseif data.settingsTab == 1 then
+            imgui.TextColoredRGB("{87CEFA}Баланс дома:")
+            imgui.PushItemWidth(-1)
+            if imgui.SliderInt("##targetBalance", imcfg.targetHouseBalance, 5000000, 60000000,
+                u8("$" .. utils.formatNumber(imcfg.targetHouseBalance[0]))) then
+                local v = math.floor(imcfg.targetHouseBalance[0] / 100000 + 0.5) * 100000
+                cfg.targetHouseBalance = v;
+                imcfg.targetHouseBalance[0] = v;
+                save()
+            end
+            blockSettingsWheel = imgui.IsItemHovered()
+            imgui.PopItemWidth()
+            imgui.Hint(
+                "Пополнять дом если баланс упадё ниже этого значения.")
+
+            if imgui.ToggleButton(u8 "Только пополнение баланса##imcfg_useSimpleTopUp",
+                imcfg.useSimpleTopUp) then
+                cfg.useSimpleTopUp = imcfg.useSimpleTopUp[0];
+                save()
+            end
+            imgui.Hint(
+                "Быстрый режим: кнопка обслуживания только пополнит баланс,\nне заходя в каждую стойку. Действия ниже при этом игнорируются.")
+
+            imgui.Spacing()
+            imgui.Text(fa.GEAR)
+            imgui.SameLine(0, 6)
+            imgui.TextColoredRGB("{87CEFA}Что делать кнопкой обслуживания")
+            imgui.Hint(
+                "Выберите действия для кнопки «Авто-бслуживание».\nИх можно комбинировать в любом сочетании —\nнапример, только собрать крипту, или\nсобрать и сразу включить видеокарты.")
+
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+            imgui.BeginChild("##fixActions", imgui.ImVec2(0, 100), true,
+                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+            if cfg.useSimpleTopUp then
+                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1))
+                imgui.PushStyleColor(imgui.Col.CheckMark, imgui.ImVec4(0.5, 0.5, 0.5, 1))
+                imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.10, 0.10, 0.10, 1))
+                imgui.PushStyleColor(imgui.Col.FrameBgHovered, imgui.ImVec4(0.10, 0.10, 0.10, 1))
+                _fixDisabledBuf = _fixDisabledBuf or imgui.new.bool(false)
+                _fixDisabledBuf[0] = cfg.fixCollectEnabled
+                imgui.ToggleButton(u8 "Собирать крипту##_fixDisabledBuf", _fixDisabledBuf, true)
+                _fixDisabledBuf[0] = cfg.fixSwitchEnabled
+                imgui.ToggleButton(u8 "Включать видеокарты##_fixDisabledBuf", _fixDisabledBuf, true)
+                _fixDisabledBuf[0] = cfg.fixTopUpEnabled
+                imgui.ToggleButton(u8 "Пополнять баланс##_fixDisabledBuf", _fixDisabledBuf, true)
+                imgui.PopStyleColor(4)
                 imgui.Hint(
-                    "Если вы не подключены к серверу — все автодействия\n" ..
-                        "приостанавливаются до момента подключения.\n\n" ..
-                        "После подключения ждём указанное ниже время,\n" ..
-                        "прежде чем возобновить автодействия.")
-
-                if cfg.waitForConnection then
-                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
-                    imgui.BeginChild("##connSub", imgui.ImVec2(0, 70), true,
-                        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                    imgui.PushItemWidth(-1)
-                    if imgui.SliderInt("##delayAfterConnect", imcfg.delayAfterConnectMin, 5, 20, u8(
-                        string.format("задержка %d мин. после подключения",
-                            imcfg.delayAfterConnectMin[0]))) then
-                        cfg.delayAfterConnectMin = imcfg.delayAfterConnectMin[0];
-                        save()
-                    end
-                    imgui.PopItemWidth()
-
-                    if data.connectionState.connected then
-                        local waitLeft = data.connectionState.readyAfterConnect - os.time()
-                        if waitLeft > 0 then
-                            imgui.TextColoredRGB(string.format("{FFE133}Активация через: {FFFFFF}%s",
-                                formatTimeLeft(waitLeft)))
-                        else
-                            imgui.TextColoredRGB("{BEF781}Статус: подключён")
-                        end
-                    else
-                        imgui.TextColoredRGB("{FF6B6B}Статус: не в игре")
-                    end
-
-                    imgui.EndChild()
-                    imgui.PopStyleColor()
-                end
-
-                imgui.Spacing()
-                imgui.Separator()
-                imgui.Spacing()
-
-                imgui.TextColoredRGB("{87CEFA}Скорость диалогов:")
-                imgui.PushItemWidth(-1)
-                if imgui.SliderInt("##pause", imcfg.pause_duration, 150, 300, u8 "%d мс") then
-                    cfg.pause_duration = imcfg.pause_duration[0];
+                    "Недоступно: включён режим «Только пополнение баланса.")
+            else
+                if imgui.ToggleButton(u8 "Собирать крипту##imcfg_fixCollectEnabled",
+                    imcfg.fixCollectEnabled) then
+                    cfg.fixCollectEnabled = imcfg.fixCollectEnabled[0];
                     save()
                 end
-                imgui.Hint("Пауза между диалогами.")
-                if imgui.SliderInt("##count", imcfg.count_action, 1, 20,
-                    u8(string.format("пауза каждые %d", imcfg.count_action[0]))) then
-                    cfg.count_action = imcfg.count_action[0];
+                imgui.Hint("Снимать криптовалюту со всех домов.")
+                if imgui.ToggleButton(u8 "Включать видеокарты##imcfg_fixSwitchEnabled",
+                    imcfg.fixSwitchEnabled) then
+                    cfg.fixSwitchEnabled = imcfg.fixSwitchEnabled[0];
                     save()
                 end
-                imgui.Hint("Количество взаимодействий с диалогами до паузы.")
-                imgui.PopItemWidth()
-
-                -- Вкладка 4: Помощь
-            elseif data.settingsTab == 4 then
-                imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.28, 0.45, 1))
-                imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20, 0.30, 0.48, 1))
-                imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.32, 0.50, 1))
-                if imgui.Button(fa.ARROW_UP_FROM_BRACKET .. "  " .. u8("Открыть в отдельном окне"),
-                    imgui.ImVec2(-1, 28)) then
-                    data.helpPage = 1
-                    data.helpWindowMode = 'reference'
-                    data.showSettingsWindow[0] = false
-                    data.showHelpWindow[0] = true
+                imgui.Hint("Включать выключенные карты.")
+                if imgui.ToggleButton(u8 "Пополнять баланс##imcfg_fixTopUpEnabled", imcfg.fixTopUpEnabled) then
+                    cfg.fixTopUpEnabled = imcfg.fixTopUpEnabled[0];
+                    save()
                 end
-                imgui.PopStyleColor(3)
-                imgui.Hint("Показать справку в отдельном перемещаемом окне.")
-                imgui.Spacing()
-                helpTool.renderReference()
+                imgui.Hint("Пополнять баланс домов до целевого значения.")
+            end
+            imgui.EndChild()
+            imgui.PopStyleColor()
 
-                -- Вкладка 5: Отладка
-            elseif data.settingsTab == 5 and cfg.debug then
-                imgui.TextColoredRGB("{FFE133}Инструменты отладки")
-                imgui.Spacing()
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
 
-                local dbgTabs = {u8 "Таймеры", u8 "Состояние", u8 "Действия"}
-                local dbgCount = #dbgTabs
-                local dbgW = (winW - imStyle.WindowPadding.x * 2 - imStyle.ItemSpacing.x * (dbgCount - 1)) / dbgCount
-                for di, dl in ipairs(dbgTabs) do
-                    if di > 1 then
+            imgui.TextColoredRGB("{87CEFA}Охлаждение:")
+            imgui.PushItemWidth(-1)
+            if imgui.SliderInt("##coolantPercentSettings", imcfg.useCoolantPercent, 1, 100, u8 "%d%%") then
+                cfg.useCoolantPercent = imcfg.useCoolantPercent[0];
+                save()
+            end
+            imgui.PopItemWidth()
+            imgui.Hint("Заливать если уровень ниже этого порога.")
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Автоматизация стойки:")
+
+            if imgui.ToggleButton(
+                u8 "Авто-заливка при открытии стойки##imcfg_fixCoolantEnabled",
+                imcfg.fixCoolantEnabled) then
+                cfg.fixCoolantEnabled = imcfg.fixCoolantEnabled[0];
+                save()
+            end
+            imgui.Hint(
+                "Автоматически заливать жидкость при открытии стойки видеокарт.\nНе работает через Флешку Майнера.")
+
+            if imgui.ToggleButton(
+                u8 "Авто-включение карт после заливки##imcfg_autoEnableCards",
+                imcfg.autoEnableCards) then
+                cfg.autoEnableCards = imcfg.autoEnableCards[0]
+                if cfg.autoEnableCards then
+                    cfg.autoEnableCardsOnOpen = false;
+                    imcfg.autoEnableCardsOnOpen[0] = false
+                end
+                save()
+            end
+            imgui.Hint(
+                "После заливки жидкости автоматически включать выключенные карты.\nНе совместимо с 'Авто-включение при открытии стойки'.")
+
+            if imgui.ToggleButton(
+                u8 "Авто-включение карт при открытии стойки##imcfg_autoEnableCardsOnOpen",
+                imcfg.autoEnableCardsOnOpen) then
+                cfg.autoEnableCardsOnOpen = imcfg.autoEnableCardsOnOpen[0]
+                if cfg.autoEnableCardsOnOpen then
+                    cfg.autoEnableCards = false;
+                    imcfg.autoEnableCards[0] = false
+                end
+                save()
+            end
+            imgui.Hint("Включать выключенные карты при открытии стойки,\n" ..
+                           "независимо от заливки жидкости.\n" ..
+                           "Не совместимо с 'Авто-включение после заливки'.\n")
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Предупреждения:")
+            imgui.Text(u8 "Порог баланса (предупреждение):")
+            imgui.PushItemWidth(-1)
+            if imgui.SliderInt("##minBalanceWarning", imcfg.minBalanceWarning, 1000000, 15000000,
+                u8("$" .. utils.formatNumber(imcfg.minBalanceWarning[0]))) then
+                local v = math.floor(imcfg.minBalanceWarning[0] / 500000 + 0.5) * 500000
+                cfg.minBalanceWarning = v;
+                imcfg.minBalanceWarning[0] = v;
+                save()
+            end
+            imgui.PopItemWidth()
+            imgui.Hint(
+                "Карточка дома станет жёлто если баланс ниже этого значения.")
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Сбор крипты:")
+            imgui.Text(u8 "Собирать если накопилось не менее:")
+            imgui.PushItemWidth(-1)
+            if imgui.SliderInt("##collectOnlyIfMin", imcfg.collectOnlyIfMin, 0, 180,
+                imcfg.collectOnlyIfMin[0] == 0 and u8 "Любое кол-во" or
+                    u8(string.format("от %d BTC", imcfg.collectOnlyIfMin[0]))) then
+                cfg.collectOnlyIfMin = imcfg.collectOnlyIfMin[0];
+                save()
+            end
+            imgui.PopItemWidth()
+            imgui.Hint(
+                "0 = собирать всегда (от 1 BTC).\nПри сборе пропускать дома где меньше N BTC.\n" ..
+                    "Учтите, что если на ферме будет например 5 карт,\n" ..
+                    "а значение стоит на 180, то этот дом никогда не будет собираться.")
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            if imgui.Selectable(u8 "Проверить подвалы", false) then
+                if not data.working then
+                    local task = buildTaskTable('scanBasements')
+                    selectMainMenuTab("houses")
+                    runTaskAndReopenDialog(function()
+                        task:run(nil)
+                    end)
+                else
+                    utils.addChat("{F78181}Дождитесь завершения текущей операции.")
+                end
+            end
+            imgui.Hint("Сканирование домов на наличие подвала.")
+
+            -- Вкладка 2: Автосбор + Уведомления
+        elseif data.settingsTab == 2 then
+            imgui.TextColoredRGB("{FF6B6B}Авто")
+
+            if imgui.ToggleButton(u8 "Включить авто-функции##imcfg_cheatModeEnabled",
+                imcfg.cheatModeEnabled) then
+                cfg.cheatModeEnabled = imcfg.cheatModeEnabled[0]
+                if not cfg.cheatModeEnabled then
+                    cfg.autoCollectEnabled = false;
+                    imcfg.autoCollectEnabled[0] = false
+                    cfg.smartCollectEnabled = false;
+                    imcfg.smartCollectEnabled[0] = false
+                    cfg.autoPayTaxesEnabled = false;
+                    imcfg.autoPayTaxesEnabled[0] = false
+                    cfg.autoTopUpEnabled = false;
+                    imcfg.autoTopUpEnabled[0] = false
+                end
+                save()
+            end
+            imgui.Hint("{FF6B6B} ВНИМАНИЕ!\n" ..
+                           "Эти функции могут быть запрещены на вашем сервере!\n" ..
+                           "Перед использованием уточните у администрации,\n" ..
+                           "не нарушает ли это правила сервера.\n\n" ..
+                           "Используйте на свой страх и риск.\n" ..
+                           "Автор не несёт ответственности за блокировки\n" ..
+                           "или иные проблемы, связанные с их использованием.\n\n")
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            do
+                local subTabs = {u8 "Автосбор", u8 "Финансы", u8 "Уведомления"}
+                local subTabCount = #subTabs
+                local subTabAvailable = imgui.GetContentRegionAvail().x
+                local subTabsTotal = subTabAvailable * 0.88
+                local subTabW = (subTabsTotal - imStyle.ItemSpacing.x * (subTabCount - 1)) / subTabCount
+                imgui.SetCursorPosX(imgui.GetCursorPosX() + (subTabAvailable - subTabsTotal) / 2)
+                renderAnimatedTabHighlight("auto", data.cheatSubTab, subTabCount, subTabsTotal, 30,
+                    imStyle.ItemSpacing.x)
+
+                for si, slabel in ipairs(subTabs) do
+                    if si > 1 then
                         imgui.SameLine(0, imStyle.ItemSpacing.x)
                     end
-                    imgui.PushStyleColor(imgui.Col.Button, data.debugSubTab == di - 1 and
-                        imgui.ImVec4(0.18, 0.28, 0.45, 1) or imgui.ImVec4(0.11, 0.12, 0.16, 1))
-                    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20, 0.30, 0.48, 1))
-                    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.32, 0.50, 1))
-                    if imgui.Button(dl .. "##dbgSub", imgui.ImVec2(dbgW, 30)) then
-                        data.debugSubTab = di - 1
+                    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.11, 0.12, 0.16, 0.45))
+                    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.19, 0.25, 1))
+                    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.23, 0.29, 1))
+                    if imgui.Button(slabel .. "##cheatSub", imgui.ImVec2(subTabW, 30)) then
+                        data.cheatSubTab = si - 1
                     end
                     imgui.PopStyleColor(3)
                 end
                 imgui.Spacing()
 
-                if data.debugSubTab == 0 then
-                    imgui.TextColoredRGB("{87CEFA}Автосбор по расписанию:")
-                    for _, sec in ipairs({15, 30}) do
-                        if imgui.Selectable(u8(string.format("Сработает через %d сек.", sec)), false) then
-                            cfg.lastCollectTime = os.time() - collectTool.getInterval() + sec;
-                            save()
-                            utils.addChat(string.format("{FFE133}DEBUG: автосбор через %d сек.", sec))
-                        end
-                    end
-                    if imgui.Selectable(
-                        u8 "Сбросить таймер (следующий — по расписанию)", false) then
-                        cfg.lastCollectTime = os.time()
-                        collectTool.resetPendingDelay()
-                        save()
-                    end
-                    if imgui.Selectable(u8 "Запустить сбор немедленно", false) then
-                        cfg.lastCollectTime = 0;
-                        save()
-                    end
+                if data.cheatSubTab == 0 then
+                    if not cfg.cheatModeEnabled then
+                        imgui.Spacing()
+                        imgui.TextColoredRGB(
+                            "{808080}Недоступно. Включите авто-функции выше.")
+                    else
+                        imgui.TextColoredRGB("{87CEFA}Автосбор по расписанию")
 
-                    imgui.Spacing()
-                    imgui.TextColoredRGB("{87CEFA}Умный автосбор:")
-                    for _, btc in ipairs({10, 50, 100}) do
-                        if imgui.Selectable(u8(string.format("Установить цель: %d BTC", btc)), false) then
-                            cfg.smartCollectTarget = btc;
-                            imcfg.smartCollectTarget[0] = btc
-                            cfg.lastCollectTime = 0;
+                        if imgui.ToggleButton(
+                            u8 "Включить автосбор по расписанию##imcfg_autoCollectEnabled",
+                            imcfg.autoCollectEnabled) then
+                            cfg.autoCollectEnabled = imcfg.autoCollectEnabled[0]
+                            if cfg.autoCollectEnabled then
+                                cfg.smartCollectEnabled = false;
+                                imcfg.smartCollectEnabled[0] = false
+                                cfg.reminderEnabled = false;
+                                imcfg.reminderEnabled[0] = false
+                            end
                             save()
                         end
-                    end
+                        imgui.Hint(
+                            "Собирать крипту через равные промежутки времени.")
 
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Фоновое обновление:")
-                    do
-                        local refLeft = (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) - os.time()
-                        imgui.TextColoredRGB(string.format("{808080}До обновления: {FFFFFF}%s",
-                            refLeft > 0 and formatTimeLeft(refLeft) or "сейчас"))
-                        imgui.TextColoredRGB(string.format("{808080}Последнее: {FFFFFF}%s",
-                            cfg.lastAutoRefreshTime > 0 and os.date('%H:%M:%S', cfg.lastAutoRefreshTime) or
-                                "никогда"))
-                    end
-                    if imgui.Selectable(u8 "Запустить фоновое обновление сейчас", false) then
-                        if not data.working then
-                            lua_thread.create(function()
-                                autoRefreshTool.runSilent()
-                            end)
-                        end
-                    end
-                    for _, sec in ipairs({10, 30}) do
-                        if imgui.Selectable(u8(string.format("Обновление через %d сек.", sec)), false) then
-                            cfg.lastAutoRefreshTime = os.time() - cfg.autoRefreshInterval * 60 + sec;
-                            save()
-                        end
-                    end
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Рандомная задержка:")
-                    imgui.TextColoredRGB(
-                        string.format("{808080}Locked: {FFFFFF}%s", tostring(data.pendingCollectLocked)))
-                    if data.pendingCollectLocked then
-                        local pLeft = data.pendingCollectAt - os.time()
-                        imgui.TextColoredRGB(string.format("{808080}Осталось: %s%s",
-                            pLeft > 0 and "{FFFFFF}" or "{BEF781}",
-                            pLeft > 0 and formatTimeLeft(pLeft) or "сейчас!"))
-                    end
-                    if imgui.Selectable(u8 "Задержка 15 сек.", false) then
-                        data.pendingCollectAt = os.time() + 15;
-                        data.pendingCollectLocked = true
-                    end
-                    if imgui.Selectable(u8 "Задержка 60 сек.", false) then
-                        data.pendingCollectAt = os.time() + 60;
-                        data.pendingCollectLocked = true
-                    end
-                    if imgui.Selectable(u8 "Снять задержку (немедленно)", false) then
-                        data.pendingCollectAt = os.time() - 1
-                        if not data.pendingCollectLocked then
-                            data.pendingCollectLocked = true
-                        end
-                    end
-                    if imgui.Selectable(u8 "Отменить задержку", false) then
-                        data.pendingCollectLocked = false;
-                        data.pendingCollectAt = 0
-                    end
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}PayDay:")
-                    if imgui.Selectable(u8(string.format("Имитация: %s", data.isWaitingPayday and
-                        "остановить" or "запустить")), false) then
-                        data.isWaitingPayday = not data.isWaitingPayday;
-                        data.skipPayday = false
-                    end
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Тест уведомлений:")
-                    if imgui.Selectable(u8 "reminder", false) then
-                        data.notifyWindow.btcAmount = 250;
-                        data.notifyWindow.mode = 'reminder'
-                        data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
-                        data.notifyWindow.isPreview = true
-                        data.notifyWindow.show[0] = true
-                    end
-                    if imgui.Selectable(u8 "countdown (30с)", false) then
-                        if cfg.notifyAutoCollectEnabled then
-                            data.notifyWindow.countdownTarget = os.time() + 30
-                            data.notifyWindow.mode = 'countdown';
-                            data.notifyWindow.autoHideAt = 0
-                            data.notifyWindow.show[0] = true
-                        end
-                    end
-                    if imgui.Selectable(u8 "collecting", false) then
-                        if cfg.notifyAutoCollectEnabled then
-                            data.notifyWindow.mode = 'collecting';
-                            data.notifyWindow.autoHideAt = 0
-                            data.notifyWindow.show[0] = true
-                        end
-                    end
-                    if imgui.Selectable(u8 "Скрыть", false) then
-                        data.notifyWindow.show[0] = false
-                    end
-                elseif data.debugSubTab == 1 then
-                    imgui.TextColoredRGB("{87CEFA}Текущее состояние:")
-                    imgui.TextColoredRGB(string.format("{808080}Задача: {FFFFFF}%s",
-                        data.taskTypeNow ~= '' and data.taskTypeNow or "нет"))
-                    imgui.TextColoredRGB(string.format("{808080}working: {FFFFFF}%s", tostring(data.working)))
-                    imgui.TextColoredRGB(string.format("{808080}isFlashminer: {FFFFFF}%s", tostring(data.isFlashminer)))
-                    imgui.TextColoredRGB(string.format("{808080}isRodina: {FFFFFF}%s", tostring(data.isRodina)))
-                    imgui.TextColoredRGB(string.format("{808080}Домов: {FFFFFF}%d", #data.dialogData.flashminer))
-                    imgui.TextColoredRGB(string.format("{808080}Карт: {FFFFFF}%d", #data.dialogData.videocards))
-                    imgui.TextColoredRGB(string.format("{808080}Прогресс: {FFFFFF}%d/%d  %d/%d",
-                        data.progressCurrent, data.progressTotal, data.progressHouseCurrent, data.progressHouseTotal))
-
-                    imgui.TextColoredRGB(string.format("{808080}pendingLocked: {FFFFFF}%s",
-                        tostring(data.pendingCollectLocked)))
-                    if data.pendingCollectLocked then
-                        imgui.TextColoredRGB(string.format("{808080}pendingAt: {FFFFFF}%s (%s)",
-                            os.date('%H:%M:%S', data.pendingCollectAt), formatTimeLeft(
-                                math.max(0, data.pendingCollectAt - os.time()))))
-                    end
-                    imgui.TextColoredRGB(string.format("{808080}notifyAuto: {FFFFFF}%s",
-                        tostring(cfg.notifyAutoCollectEnabled)))
-                    imgui.TextColoredRGB(string.format("{808080}autoRefresh: {FFFFFF}%s (%dм)",
-                        tostring(cfg.autoRefreshEnabled), cfg.autoRefreshInterval))
-                    imgui.TextColoredRGB(string.format("{808080}randomDelay: {FFFFFF}%s (%d-%d)",
-                        tostring(cfg.randomDelayEnabled), cfg.randomDelayMin, cfg.randomDelayMax))
-                    imgui.TextColoredRGB(string.format("{808080}notifyMode: {FFFFFF}%s",
-                        data.notifyWindow.mode ~= '' and data.notifyWindow.mode or "нет"))
-                    imgui.TextColoredRGB(string.format("{808080}silent: {FFFFFF}%s", tostring(data.silentWindowOpen)))
-                    imgui.TextColoredRGB(string.format("{808080}connected: {FFFFFF}%s",
-                        tostring(data.connectionState.connected)))
-                    if data.connectionState.readyAfterConnect > os.time() then
-                        imgui.TextColoredRGB(string.format("{808080}ready in: {FFE133}%s", formatTimeLeft(
-                            data.connectionState.readyAfterConnect - os.time())))
-                    end
-                    local postponed = autoRefreshTool.getPostponedUntil()
-                    if postponed > os.time() then
-                        imgui.TextColoredRGB(string.format("{808080}refresh postponed: {FFE133}%s",
-                            formatTimeLeft(postponed - os.time())))
-                    end
-                    imgui.TextColoredRGB(string.format("{808080}scanDone: {FFFFFF}%s",
-                        tostring(data.initialScanCompleted)))
-                    do
-                        local _tl = collectTool.getTimeUntil()
-                        imgui.TextColoredRGB(string.format("{808080}До автосбора: {FFFFFF}%s",
-                            _tl <= 0 and "уже пора!" or formatTimeLeft(_tl)))
-                    end
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Игрок:")
-                    local px, py, pz = getCharCoordinates(PLAYER_PED)
-                    imgui.TextColoredRGB(string.format("{808080}Координаты: {FFFFFF}%.2f, %.2f, %.2f", px, py,
-                        pz))
-                    local interior = getActiveInterior()
-                    imgui.TextColoredRGB(string.format("{808080}Интерьер: {FFFFFF}%d", interior or 0))
-
-                    imgui.Spacing()
-                    imgui.TextColoredRGB("{87CEFA}Заточка:")
-                    imgui.TextColoredRGB(string.format("{808080}isOn: {FFFFFF}%s {808080}step: {FFFFFF}%d",
-                        tostring(data.improve.isOn), data.improve.step))
-                    imgui.TextColoredRGB(string.format(
-                        "{808080}Карт в кэше: {FFFFFF}%d {808080}probed: {FFFFFF}%s {808080}probing: {FFFFFF}%s",
-                        #data.improve.cef.cards, tostring(data.improve.cef.probed), tostring(data.improve.cef.probing)))
-                    imgui.TextColoredRGB(string.format(
-                        "{808080}oils.busy: {FFFFFF}%s {808080}busyAt: {FFFFFF}%.1f с назад",
-                        tostring(data.improve.oils.busy),
-                        data.improve.oils.busyAt > 0 and (os.clock() - data.improve.oils.busyAt) or 0))
-                    imgui.TextColoredRGB(string.format("{808080}suppressDialogs: {FFFFFF}%s",
-                        tostring(data.suppressDialogs)))
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Диагностика:")
-                    do
-                        local hasHouses = #data.dialogData.flashminer > 0
-                        local hasStatuses, hasSnapshots, staleCount = false, false, 0
-                        local now2 = os.time()
-                        for _, h in ipairs(data.dialogData.flashminer) do
-                            local st = data.houseStatuses[h.house_number]
-                            if st and st.lastCheck > 0 then
-                                hasStatuses = true
-                                if (now2 - st.lastCheck) > 3600 then
-                                    staleCount = staleCount + 1
+                        if cfg.autoCollectEnabled then
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                            imgui.BeginChild("##autoCSub", imgui.ImVec2(0, 100), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                            imgui.PushItemWidth(-1)
+                            if imgui.SliderInt("##cTimes", imcfg.collectTimesPerDay, 1, 8,
+                                u8(string.format("%d/день (~%s)", imcfg.collectTimesPerDay[0], formatTimeLeft(
+                                    math.floor(86400 / math.max(1, imcfg.collectTimesPerDay[0])))))) then
+                                cfg.collectTimesPerDay = imcfg.collectTimesPerDay[0]
+                                collectTool.resetPendingDelay()
+                                save()
+                            end
+                            imgui.PopItemWidth()
+                            local tL = collectTool.getTimeUntil()
+                            if data.pendingCollectLocked then
+                                local pLeft = data.pendingCollectAt - os.time()
+                                if pLeft > 0 then
+                                    imgui.TextColoredRGB(string.format(
+                                        "{FFE133}Рандомная задержка: %s", formatTimeLeft(pLeft)))
                                 end
                             end
-                            local snap = cfg.cardSnapshots[tostring(h.house_number)]
-                            if snap and snap.dailyBtcRate and snap.dailyBtcRate > 0 then
-                                hasSnapshots = true
+                            if tL > 0 then
+                                imgui.TextColoredRGB(string.format("{808080}До сбора: {FFFFFF}%s",
+                                    formatTimeLeft(tL)))
                             end
-                        end
-                        imgui.TextColoredRGB(string.format("{808080}Домов: %s%d",
-                            hasHouses and "{BEF781}" or "{FF3333}", #data.dialogData.flashminer))
-                        imgui.TextColoredRGB(string.format("{808080}Статусы: %s",
-                            hasStatuses and "{BEF781}да" or "{FF3333}нет"))
-                        imgui.TextColoredRGB(string.format("{808080}Снапшоты: %s",
-                            hasSnapshots and "{BEF781}да" or "{FFE133}нет"))
-                        if staleCount > 0 then
-                            imgui.TextColoredRGB(string.format("{FFE133}Устаревших (>1ч): %d", staleCount))
-                        end
-                        imgui.TextColoredRGB(string.format("{808080}Готов к авто: %s", (hasHouses and
-                            hasStatuses) and "{BEF781}да" or "{FF3333}нет"))
-                        imgui.TextColoredRGB(string.format("{808080}Готов к умному: %s", (hasHouses and
-                            hasStatuses and hasSnapshots) and "{BEF781}да" or "{FF3333}нет"))
-                    end
-
-                    imgui.Spacing()
-                    if imgui.Selectable(u8 "Показать окно обновления скрипта", false) then
-                        updateState.showPopup[0] = true
-                    end
-
-                    imgui.Spacing()
-                    imgui.TextColoredRGB("{87CEFA}Снапшоты:")
-                    if #data.dialogData.flashminer > 0 then
-                        for _, h in ipairs(data.dialogData.flashminer) do
-                            local snap = cfg.cardSnapshots[tostring(h.house_number)]
-                            local st = data.houseStatuses[h.house_number]
-                            local rate = (snap and snap.dailyBtcRate) and string.format("%.3f", snap.dailyBtcRate) or
-                                             "-"
-                            local obs = (snap and snap.incomeObs) and #snap.incomeObs or 0
-                            local age = (st and st.lastCheck > 0) and
-                                            string.format("%dм", math.floor((os.time() - st.lastCheck) / 60)) or "-"
-                            imgui.TextColoredRGB(string.format("{808080}№%d: {FFFFFF}%s {808080}(%d) {808080}%s",
-                                h.house_number, rate, obs, age))
-                        end
-                    else
-                        imgui.TextColoredRGB("{808080}Нет домов.")
-                    end
-                elseif data.debugSubTab == 2 then
-                    imgui.TextColoredRGB("Действия:")
-                    if imgui.Selectable(u8 "Сбросить working + stopAction", false) then
-                        taskState.setWorking(false);
-                        data.stopAction = false;
-                        data.taskTypeNow = nil
-                        data.isWaitingPayday = false;
-                        data.skipPayday = false
-                        progressTracker.reset()
-                    end
-                    if imgui.Selectable(u8 "Закрыть диалог", false) then
-                        if sampIsDialogActive() then
-                            sampCloseCurrentDialogWithButton(0)
-                        end
-                    end
-                    if imgui.Selectable(u8 "Сбросить статусы домов", false) then
-                        data.houseStatuses = {};
-                        data.initialScanCompleted = false
-                    end
-                    if imgui.Selectable(u8 "Сбросить снапшоты", false) then
-                        cfg.cardSnapshots = {};
-                        save()
-                    end
-                    if imgui.Selectable(u8 "Сбросить pending", false) then
-                        data.pendingCollectLocked = false;
-                        data.pendingCollectAt = 0
-                    end
-                    if imgui.Selectable(u8 "Сбросить таймер обновления", false) then
-                        cfg.lastAutoRefreshTime = 0;
-                        save()
-                    end
-
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Действия с домами:")
-                    if imgui.Selectable(u8 "Зайти в выбранный дом", false) then
-                        if #data.dialogData.flashminer > 0 and not data.working then
-                            local house = data.dialogData.flashminer[data.selectedHouseIndex or 1]
-                            lua_thread.create(function()
-                                taskState.setWorking(true);
-                                data.taskTypeNow = 'updateStatuses'
-                                sampSendDialogResponse(data.dFlashminerId, 1, house.index - 1, "")
-                                wait(500)
-                                sampSendDialogResponse(dialogIdTable.houseFlashMinerDialogId, 0, 0, "")
-                                wait(200);
-                                taskState.setWorking(false);
-                                data.taskTypeNow = nil
-                            end)
-                        end
-                    end
-                    if imgui.Selectable(u8 "Сбросить выбранный дом (заново скан)", false) then
-                        if #data.dialogData.flashminer > 0 then
-                            local house = data.dialogData.flashminer[data.selectedHouseIndex or 1]
-                            if house then
-                                local key = tostring(house.house_number)
-                                cfg.basementScanned[key] = nil
-                                cfg.housesWithoutBasement[key] = nil
-                                cfg.cardSnapshots[key] = nil
-                                cfg.excludedHouses[key] = nil
-                                data.houseStatuses[house.house_number] = nil
-                                cfg.lastHouseListHash = ''
-                                data.initialScanCompleted = false
+                            if imgui.Selectable(u8 "Сбросить таймер", false) then
+                                cfg.lastCollectTime = os.time()
+                                collectTool.resetPendingDelay()
                                 save()
-                                utils.addChat(string.format(
-                                    "{FFE133}DEBUG: дом №%s сброшен — отсканируется при следующем /flashminer.",
-                                    key))
                             end
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
                         end
-                    end
-                    imgui.Hint(
-                        "Удаляет статус/снапшот/флаги подвала для выбранного дома.\n" ..
-                            "При следующем открытии /flashminer сработает скан подвала.")
-                    if imgui.Selectable(u8 "Лог видеокарт", false) then
-                        for i, card in ipairs(data.dialogData.videocards) do
-                            utils.debugChat(string.format("{808080}[%d] lvl=%d %s work=%s btc=%.2f cool=%.1f%%", i,
-                                card.level, card.card_type or "?", tostring(card.working), card.btc_full, card.coolant))
-                        end
-                    end
-                    if imgui.Selectable(u8 "Лог исключённых", false) then
-                        for houseNum in pairs(cfg.excludedHouses) do
-                            utils.debugChat(string.format("{808080}  №%s", houseNum))
-                        end
-                    end
-                    if imgui.Selectable(u8 "Лог без подвала", false) then
-                        for houseNum in pairs(cfg.housesWithoutBasement) do
-                            utils.debugChat(string.format("{808080}  №%s", houseNum))
-                        end
-                    end
 
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
+                        imgui.Spacing()
 
-                    imgui.TextColoredRGB("{87CEFA}Переключения:")
-                    if imgui.Selectable(u8(string.format("silentMode: %s", cfg.silentMode and "выкл" or "вкл")),
-                        false) then
-                        cfg.silentMode = not cfg.silentMode;
-                        imcfg.silentMode[0] = cfg.silentMode;
-                        save()
-                    end
-                    if imgui.Selectable(u8(string.format("pauseOnPayday: %s",
-                        cfg.pauseOnPayday and "выкл" or "вкл")), false) then
-                        cfg.pauseOnPayday = not cfg.pauseOnPayday;
-                        imcfg.pauseOnPayday[0] = cfg.pauseOnPayday;
-                        save()
-                    end
-                    if imgui.Selectable(u8(string.format("isViceCity: %s", data.isViceCity and "выкл" or "вкл")),
-                        false) then
-                        data.isViceCity = not data.isViceCity
-                    end
-                    if imgui.Selectable(u8(string.format("notifyAuto: %s",
-                        cfg.notifyAutoCollectEnabled and "выкл" or "вкл")), false) then
-                        cfg.notifyAutoCollectEnabled = not cfg.notifyAutoCollectEnabled
-                        imcfg.notifyAutoCollectEnabled[0] = cfg.notifyAutoCollectEnabled;
-                        save()
-                    end
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
+                        imgui.TextColoredRGB("{87CEFA}Умный автосбор")
 
-                    imgui.TextColoredRGB("{87CEFA}Заточка:")
-                    if imgui.Selectable(u8 "Открыть/закрыть окно заточки", false) then
-                        data.showImproveWindow[0] = not data.showImproveWindow[0]
-                    end
-                    if imgui.Selectable(u8 "Сбросить oils.busy", false) then
-                        data.improve.oils.busy = false
-                        data.improve.oils.busyAt = 0
-                        utils.addChat("{FFE133}DEBUG: oils.busy сброшен.")
-                    end
-                    if imgui.Selectable(u8 "Сбросить probing/probed", false) then
-                        data.improve.cef.probing = false
-                        data.improve.cef.probed = false
-                        data.improve.cef.probeDone = false
-                        utils.addChat("{FFE133}DEBUG: probing/probed сброшены.")
-                    end
-                    if imgui.Selectable(u8 "Принудительно остановить заточку", false) then
-                        improveTool.stop("DEBUG")
-                    end
-                    imgui.Spacing()
-                    imgui.Separator()
-                    imgui.Spacing()
-
-                    imgui.TextColoredRGB("{87CEFA}Тестовые дома:")
-                    if imgui.Selectable(u8 "Добавить тестовый дом", false) then
-                        local nextNum = 9001
-                        for _, h in ipairs(data.dialogData.flashminer) do
-                            if h.house_number >= nextNum then
-                                nextNum = h.house_number + 1
+                        if imgui.ToggleButton(
+                            u8 "Включить умный автосбор##imcfg_smartCollectEnabled",
+                            imcfg.smartCollectEnabled) then
+                            cfg.smartCollectEnabled = imcfg.smartCollectEnabled[0]
+                            if cfg.smartCollectEnabled then
+                                cfg.autoCollectEnabled = false;
+                                imcfg.autoCollectEnabled[0] = false
+                                cfg.reminderEnabled = false;
+                                imcfg.reminderEnabled[0] = false
                             end
+                            save()
                         end
-                        local cities = {"З", "А", "Л", "У", "П", "Автосбор"}
-                        local city = cities[math.random(#cities)]
-                        local maxB = math.random(20, 100) * 1000000
-                        local bal = math.random(0, maxB)
-                        local hasAsc = not data.isRodina
+                        imgui.Hint("Собирать когда накопится заданное кол-во BTC.")
 
-                        table.insert(data.dialogData.flashminer, {
-                            index = #data.dialogData.flashminer + 1,
-                            name = "Дом №" .. nextNum,
-                            house_number = nextNum,
-                            city = city,
-                            tax = math.random(1, 100) * 1000,
-                            cycles = math.random(0, 5),
-                            balance = bal,
-                            max_balance = maxB,
-                            raw_line = "FAKE",
-                            isFake = true
-                        })
-
-                        local fakeCoolant = math.random(20, 100)
-                        data.houseStatuses[nextNum] = {
-                            status = bal < 5000000 and "warning" or "good",
-                            lastCheck = os.time() - math.random(60, 3600),
-                            needsAttention = false,
-                            lastBalance = bal,
-                            earnings = {
-                                btc = math.random(0, 100),
-                                asc = hasAsc and math.random(0, 50) or 0
-                            },
-                            cardLevels = {},
-                            issues = {},
-                            minCoolant = fakeCoolant,
-                            coolantsNeeded = fakeCoolant < 50 and math.random(1, 5) or 0,
-                            isFake = true
-                        }
-
-                        cfg.cardSnapshots[tostring(nextNum)] = {
-                            dailyBtcRate = math.random(10, 80) / 10,
-                            dailyAscRate = hasAsc and (math.random(5, 30) / 10) or 0,
-                            time = os.time(),
-                            incomeObs = {},
-                            isFake = true
-                        }
-
-                        utils.debugChat(string.format(
-                            "{FFE133}DEBUG: добавлен тестовый дом №%d (%s, $%s).", nextNum, city,
-                            utils.formatNumber(bal)))
-                    end
-
-                    if imgui.Selectable(u8 "Удалить все тестовые дома", false) then
-                        local removed = 0
-                        local kept = {}
-                        for _, h in ipairs(data.dialogData.flashminer) do
-                            if h.isFake then
-                                data.houseStatuses[h.house_number] = nil
-                                cfg.cardSnapshots[tostring(h.house_number)] = nil
-                                removed = removed + 1
+                        if cfg.smartCollectEnabled then
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                            imgui.BeginChild("##smartCSub", imgui.ImVec2(0, 90), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                            local hc = math.max(1, #data.dialogData.flashminer)
+                            local sMin, sMax = hc * 20, hc * 20 * 8
+                            if imcfg.smartCollectTarget[0] < sMin then
+                                imcfg.smartCollectTarget[0] = sMin;
+                                cfg.smartCollectTarget = sMin
+                            end
+                            imgui.PushItemWidth(-1)
+                            if imgui.SliderInt("##sTgt", imcfg.smartCollectTarget, sMin, sMax,
+                                u8(string.format("при %d BTC", imcfg.smartCollectTarget[0]))) then
+                                cfg.smartCollectTarget = imcfg.smartCollectTarget[0]
+                                collectTool.resetPendingDelay()
+                                save()
+                            end
+                            imgui.PopItemWidth()
+                            local sB, sD, sOk = 0, 0, false
+                            for _, h in ipairs(data.dialogData.flashminer) do
+                                if not houseFilter.shouldSkip(h.house_number) then
+                                    local st = data.houseStatuses[h.house_number]
+                                    if st and st.lastCheck > 0 then
+                                        sOk = true
+                                        sB = sB + (st.earnings and st.earnings.btc or 0) +
+                                                 houseFilter.getDailyIncome(h.house_number) *
+                                                 ((os.time() - st.lastCheck) / 86400)
+                                        sD = sD + houseFilter.getDailyIncome(h.house_number)
+                                    end
+                                end
+                            end
+                            if sOk and sD > 0 then
+                                local sHL = math.max(0, (cfg.smartCollectTarget - sB) / (sD / 24))
+                                imgui.TextColoredRGB(string.format(
+                                    "{808080}Накоплено: {BEF781}%d {808080}/ {FFFFFF}%d BTC", math.floor(sB),
+                                    cfg.smartCollectTarget))
+                                if data.pendingCollectLocked then
+                                    local pLeft = data.pendingCollectAt - os.time()
+                                    if pLeft > 0 then
+                                        imgui.TextColoredRGB(string.format(
+                                            "{FFE133}Рандомная задержка: %s", formatTimeLeft(pLeft)))
+                                    end
+                                end
+                                imgui.TextColoredRGB(string.format("{808080}Сбор через: {FFFFFF}%s",
+                                    sHL <= 0 and "уже пора!" or formatTimeLeft(math.floor(sHL * 3600))))
                             else
-                                table.insert(kept, h)
+                                imgui.TextColoredRGB(sOk and "{808080}Нет данных о доходе." or
+                                                         "{808080}Откройте /flashminer.")
                             end
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
                         end
-                        data.dialogData.flashminer = kept
-                        for k, snap in pairs(cfg.cardSnapshots) do
-                            if type(snap) == 'table' and snap.isFake then
-                                cfg.cardSnapshots[k] = nil
-                                removed = removed + 1
+
+                        imgui.Spacing()
+
+                        if cfg.autoCollectEnabled or cfg.smartCollectEnabled then
+                            if imgui.ToggleButton(
+                                u8 "Включать карты после автосбора##imcfg_autoEnableCardsOnCollect",
+                                imcfg.autoEnableCardsOnCollect) then
+                                cfg.autoEnableCardsOnCollect = imcfg.autoEnableCardsOnCollect[0];
+                                save()
                             end
+                            imgui.Hint(
+                                "Включать выключенные карты сразу после сбора крипты.")
                         end
-                        save()
-                        utils.debugChat(string.format(
-                            "{FFE133}DEBUG: удалено тестовых записей: %d.", removed))
+
+                        imgui.Spacing()
+                        imgui.Separator()
+                        imgui.Spacing()
+
+                        imgui.TextColoredRGB("{87CEFA}Рандомная задержка")
+
+                        if imgui.ToggleButton(
+                            u8 "Добавлять рандомную задержку##imcfg_randomDelayEnabled",
+                            imcfg.randomDelayEnabled) then
+                            cfg.randomDelayEnabled = imcfg.randomDelayEnabled[0]
+                            if not cfg.randomDelayEnabled then
+                                data.pendingCollectLocked = false
+                                data.pendingCollectAt = 0
+                            end
+                            save()
+                        end
+                        imgui.Hint(
+                            "Добавляет случайную задержку перед автосбором.")
+
+                        if cfg.randomDelayEnabled then
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                            imgui.BeginChild("##rndDelaySub", imgui.ImVec2(0, 80), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                            imgui.PushItemWidth(-1)
+                            if imgui.SliderInt("##rndMin", imcfg.randomDelayMin, 1, imcfg.randomDelayMax[0],
+                                u8(string.format("от %d мин.", imcfg.randomDelayMin[0]))) then
+                                cfg.randomDelayMin = imcfg.randomDelayMin[0]
+                                if cfg.randomDelayMin > cfg.randomDelayMax then
+                                    cfg.randomDelayMax = cfg.randomDelayMin
+                                    imcfg.randomDelayMax[0] = cfg.randomDelayMax
+                                end
+                                collectTool.resetPendingDelay()
+                                save()
+                            end
+                            if imgui.SliderInt("##rndMax", imcfg.randomDelayMax, imcfg.randomDelayMin[0], 180,
+                                u8(string.format("до %d мин.", imcfg.randomDelayMax[0]))) then
+                                cfg.randomDelayMax = imcfg.randomDelayMax[0]
+                                if cfg.randomDelayMax < cfg.randomDelayMin then
+                                    cfg.randomDelayMin = cfg.randomDelayMax
+                                    imcfg.randomDelayMin[0] = cfg.randomDelayMin
+                                end
+                                collectTool.resetPendingDelay()
+                                save()
+                            end
+                            imgui.PopItemWidth()
+                            if data.pendingCollectLocked then
+                                local pLeft = data.pendingCollectAt - os.time()
+                                if pLeft > 0 then
+                                    imgui.TextColoredRGB(string.format("{FFE133}Задержка: %s",
+                                        formatTimeLeft(pLeft)))
+                                end
+                            end
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
+                        end
+
+                        imgui.Spacing()
+                        imgui.Separator()
+                        imgui.Spacing()
+
+                        imgui.TextColoredRGB("{87CEFA}Фоновое обновление статусов")
+
+                        if imgui.ToggleButton(
+                            u8 "Периодически обновлять данные домов##imcfg_autoRefreshEnabled",
+                            imcfg.autoRefreshEnabled) then
+                            cfg.autoRefreshEnabled = imcfg.autoRefreshEnabled[0];
+                            save()
+                        end
+                        imgui.Hint(
+                            "Автоматически обновлять статусы домов в фоне.\n" ..
+                                "Необходимо для корректной работы умного автосбора\n" ..
+                                "и автосбора без ручного открытия /flashminer.\n\n" ..
+                                "{808080}Вызывает /flashminer и обновляет данные.")
+
+                        if cfg.autoRefreshEnabled then
+                            local refreshChildH = 100
+                            if cfg.refreshPostponeOnDialog then
+                                refreshChildH = 140
+                            end
+
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                            imgui.BeginChild("##refreshSub", imgui.ImVec2(0, refreshChildH), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                            imgui.PushItemWidth(-1)
+                            if imgui.SliderInt("##refreshInt", imcfg.autoRefreshInterval, 10, 120, u8(
+                                string.format("каждые %d мин.", imcfg.autoRefreshInterval[0]))) then
+                                cfg.autoRefreshInterval = imcfg.autoRefreshInterval[0];
+                                save()
+                            end
+
+                            local refLeft = (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) - os.time()
+                            imgui.TextColoredRGB(refLeft > 0 and
+                                                     string.format("{808080}До обновления: {FFFFFF}%s",
+                                    formatTimeLeft(refLeft)) or "{BEF781}При следующей проверке!")
+
+                            imgui.PopItemWidth()
+
+                            if imgui.ToggleButton(
+                                u8 "Не прерывать открытый диалог##imcfg_refreshPostponeOnDialog",
+                                imcfg.refreshPostponeOnDialog) then
+                                cfg.refreshPostponeOnDialog = imcfg.refreshPostponeOnDialog[0];
+                                save()
+                            end
+                            imgui.Hint(
+                                "Если у вас открыт любой диалог в момент обновления —\n" ..
+                                    "отложить обновление, чтобы не сбить ваше взаимодействие.\n")
+
+                            if cfg.refreshPostponeOnDialog then
+                                imgui.PushItemWidth(-1)
+                                if imgui.SliderInt("##refreshPostpone", imcfg.refreshPostponeMinutes, 1, 5, u8(
+                                    string.format("отложить на %d мин.", imcfg.refreshPostponeMinutes[0]))) then
+                                    cfg.refreshPostponeMinutes = imcfg.refreshPostponeMinutes[0];
+                                    save()
+                                end
+                                imgui.PopItemWidth()
+                            end
+
+                            local postponed = autoRefreshTool.getPostponedUntil()
+                            if postponed > os.time() then
+                                imgui.TextColoredRGB(string.format("{FFE133}Отложено: {FFFFFF}%s",
+                                    formatTimeLeft(postponed - os.time())))
+                            end
+
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
+                        end
+                    end -- end else cheatModeEnabled (subtab 0)
+                elseif data.cheatSubTab == 1 then
+                    if not cfg.cheatModeEnabled then
+                        imgui.Spacing()
+                        imgui.TextColoredRGB(
+                            "{808080}Недоступно. Включите авто-функции выше.")
+                    else
+                        imgui.TextColoredRGB("{87CEFA}Автооплата налогов")
+
+                        if imgui.ToggleButton(
+                            u8 "Включить автооплату налогов##imcfg_autoPayTaxesEnabled",
+                            imcfg.autoPayTaxesEnabled) then
+                            cfg.autoPayTaxesEnabled = imcfg.autoPayTaxesEnabled[0];
+                            save()
+                        end
+                        imgui.Hint("Автоматическая оплата всех налогов.\n" ..
+                                       "{FFE133}Требуется ADD VIP.")
+
+                        if cfg.autoPayTaxesEnabled then
+                            local taxChildH = 85
+                            if cfg.autoPayTaxesByTimer then
+                                taxChildH = 135
+                            end
+
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                            imgui.BeginChild("##taxSub", imgui.ImVec2(0, taxChildH), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+
+                            if imgui.ToggleButton(
+                                u8 "Вместе с автосбором##imcfg_autoPayTaxesWithCollect",
+                                imcfg.autoPayTaxesWithCollect) then
+                                cfg.autoPayTaxesWithCollect = imcfg.autoPayTaxesWithCollect[0]
+                                if cfg.autoPayTaxesWithCollect then
+                                    cfg.autoPayTaxesByTimer = false;
+                                    imcfg.autoPayTaxesByTimer[0] = false
+                                end
+                                save()
+                            end
+                            imgui.Hint(
+                                "Оплачивать налоги после каждого автосбора крипты.")
+
+                            if imgui.ToggleButton(u8 "По таймеру##imcfg_autoPayTaxesByTimer",
+                                imcfg.autoPayTaxesByTimer) then
+                                cfg.autoPayTaxesByTimer = imcfg.autoPayTaxesByTimer[0]
+                                if cfg.autoPayTaxesByTimer then
+                                    cfg.autoPayTaxesWithCollect = false;
+                                    imcfg.autoPayTaxesWithCollect[0] = false
+                                end
+                                save()
+                            end
+                            imgui.Hint("Оплачивать налоги через заданный интервал.")
+
+                            if cfg.autoPayTaxesByTimer then
+                                imgui.PushItemWidth(-1)
+                                if imgui.SliderInt("##taxInt", imcfg.autoPayTaxesInterval, 1, 48, u8(
+                                    string.format("каждые %d ч.", imcfg.autoPayTaxesInterval[0]))) then
+                                    cfg.autoPayTaxesInterval = imcfg.autoPayTaxesInterval[0];
+                                    save()
+                                end
+                                imgui.PopItemWidth()
+                                local taxLeft = (cfg.lastTaxPayTime + cfg.autoPayTaxesInterval * 3600) - os.time()
+                                imgui.TextColoredRGB(taxLeft > 0 and
+                                                         string.format("{808080}До оплаты: {FFFFFF}%s",
+                                        formatTimeLeft(taxLeft)) or
+                                                         "{BEF781}Оплата при следующей проверке!")
+                            end
+
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
+                        end
+
+                        imgui.Spacing()
+                        imgui.Separator()
+                        imgui.Spacing()
+
+                        imgui.TextColoredRGB("{87CEFA}Автопополнение баланса")
+
+                        if imgui.ToggleButton(
+                            u8 "Включить автопополнение##imcfg_autoTopUpEnabled",
+                            imcfg.autoTopUpEnabled) then
+                            cfg.autoTopUpEnabled = imcfg.autoTopUpEnabled[0];
+                            save()
+                        end
+                        imgui.Hint(
+                            "Пополнять баланс домов до целевого значения.\n" ..
+                                "{808080}Целевой баланс — на вкладке 'Фермы'.")
+
+                        if cfg.autoTopUpEnabled then
+                            local topUpChildH = 150
+                            if cfg.autoTopUpByThreshold then
+                                topUpChildH = topUpChildH + 28
+                            end
+                            if cfg.autoTopUpByTimer then
+                                topUpChildH = topUpChildH + 48
+                            end
+
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                            imgui.BeginChild("##topUpSub", imgui.ImVec2(0, topUpChildH), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+
+                            imgui.TextColoredRGB(string.format("{808080}Цель: {FFD700}$%s",
+                                utils.formatNumber(cfg.targetHouseBalance)))
+                            imgui.Spacing()
+
+                            if imgui.ToggleButton(u8 "Вместе с автосбором##imcfg_autoTopUpWithCollect",
+                                imcfg.autoTopUpWithCollect) then
+                                cfg.autoTopUpWithCollect = imcfg.autoTopUpWithCollect[0]
+                                if cfg.autoTopUpWithCollect then
+                                    cfg.autoTopUpByTimer = false;
+                                    imcfg.autoTopUpByTimer[0] = false
+                                    cfg.autoTopUpByThreshold = false;
+                                    imcfg.autoTopUpByThreshold[0] = false
+                                end
+                                save()
+                            end
+                            imgui.Hint("Пополнять после каждого автосбора крипты.")
+
+                            if imgui.ToggleButton(u8 "При низком балансе##imcfg_autoTopUpByThreshold",
+                                imcfg.autoTopUpByThreshold) then
+                                cfg.autoTopUpByThreshold = imcfg.autoTopUpByThreshold[0]
+                                if cfg.autoTopUpByThreshold then
+                                    cfg.autoTopUpWithCollect = false;
+                                    imcfg.autoTopUpWithCollect[0] = false
+                                    cfg.autoTopUpByTimer = false;
+                                    imcfg.autoTopUpByTimer[0] = false
+                                end
+                                save()
+                            end
+                            imgui.Hint(
+                                "Пополнять когда баланс любого дома упадё ниже порога.")
+
+                            if cfg.autoTopUpByThreshold then
+                                imgui.PushItemWidth(-1)
+                                if imgui.SliderInt("##topUpThr", imcfg.autoTopUpThreshold, 500000, 20000000,
+                                    u8("$" .. utils.formatNumber(imcfg.autoTopUpThreshold[0]))) then
+                                    local v = math.floor(imcfg.autoTopUpThreshold[0] / 100000 + 0.5) * 100000
+                                    cfg.autoTopUpThreshold = v;
+                                    imcfg.autoTopUpThreshold[0] = v;
+                                    save()
+                                end
+                                imgui.PopItemWidth()
+                            end
+
+                            if imgui.ToggleButton(u8 "По таймеру##imcfg_autoTopUpByTimer",
+                                imcfg.autoTopUpByTimer) then
+                                cfg.autoTopUpByTimer = imcfg.autoTopUpByTimer[0]
+                                if cfg.autoTopUpByTimer then
+                                    cfg.autoTopUpWithCollect = false;
+                                    imcfg.autoTopUpWithCollect[0] = false
+                                    cfg.autoTopUpByThreshold = false;
+                                    imcfg.autoTopUpByThreshold[0] = false
+                                end
+                                save()
+                            end
+                            imgui.Hint("Пополнять баланс через заданный интервал.")
+
+                            if cfg.autoTopUpByTimer then
+                                imgui.PushItemWidth(-1)
+                                if imgui.SliderInt("##topUpInt", imcfg.autoTopUpTimerInterval, 1, 48, u8(
+                                    string.format("каждые %d ч.", imcfg.autoTopUpTimerInterval[0]))) then
+                                    cfg.autoTopUpTimerInterval = imcfg.autoTopUpTimerInterval[0];
+                                    save()
+                                end
+                                imgui.PopItemWidth()
+                                local tuLeft = (cfg.lastAutoTopUpTime + cfg.autoTopUpTimerInterval * 3600) - os.time()
+                                imgui.TextColoredRGB(tuLeft > 0 and
+                                                         string.format("{808080}До пополнения: {FFFFFF}%s",
+                                        formatTimeLeft(tuLeft)) or "{BEF781}При следующей проверке!")
+                            end
+
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
+                        end
+                    end -- end else cheatModeEnabled (subtab 1)
+                elseif data.cheatSubTab == 2 then
+                    imgui.TextColoredRGB("{87CEFA}Напоминания")
+
+                    local blockReminder = cfg.cheatModeEnabled and (cfg.autoCollectEnabled or cfg.smartCollectEnabled)
+
+                    if blockReminder then
+                        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.5, 0.5, 0.5, 1))
+                        imgui.PushStyleColor(imgui.Col.CheckMark, imgui.ImVec4(0.5, 0.5, 0.5, 1))
+                        imgui.PushStyleColor(imgui.Col.FrameBg, imgui.ImVec4(0.10, 0.10, 0.10, 1))
+                        imgui.PushStyleColor(imgui.Col.FrameBgHovered, imgui.ImVec4(0.10, 0.10, 0.10, 1))
+                        local dummy = imgui.new.bool(false)
+                        imgui.ToggleButton(u8 "Напоминание о BTC##dummy", dummy, true)
+                        imgui.PopStyleColor(4)
+                        imgui.Hint(
+                            "Недоступно пока включён автосбор\nили умный автосбор.")
+                    else
+                        if imgui.ToggleButton(u8 "Напоминание о BTC##imcfg_reminderEnabled",
+                            imcfg.reminderEnabled) then
+                            cfg.reminderEnabled = imcfg.reminderEnabled[0];
+                            save()
+                        end
+                        imgui.Hint("Показывать окно при достижении порога BTC.")
+                    end
+
+                    if cfg.reminderEnabled and not blockReminder then
+                        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                        imgui.BeginChild("##remSub", imgui.ImVec2(0, 140), true,
+                            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                        local estBtc, hasData = estimateTotalBTC()
+                        if hasData then
+                            local fr = math.min(estBtc / math.max(cfg.btcThreshold, 1), 1.0)
+                            local c = fr >= 1.0 and "{BEF781}" or (fr >= 0.7 and "{FFE133}" or "{FF6B6B}")
+                            imgui.TextColoredRGB(string.format("{808080}Сейчас: %s%d {808080}/ {FFFFFF}%d BTC", c,
+                                math.floor(estBtc), cfg.btcThreshold))
+                        end
+                        imgui.PushItemWidth(-1)
+                        if imgui.SliderInt("##btcThr", imcfg.btcThreshold, 10, 2000,
+                            u8(string.format("порог: %d BTC", imcfg.btcThreshold[0]))) then
+                            cfg.btcThreshold = imcfg.btcThreshold[0];
+                            save()
+                        end
+                        if imgui.SliderInt("##remInt", imcfg.reminderInterval, 1, 60,
+                            u8(string.format("каждые %d мин.", imcfg.reminderInterval[0]))) then
+                            cfg.reminderInterval = imcfg.reminderInterval[0];
+                            save()
+                        end
+                        if imgui.SliderInt("##nDur", imcfg.notifyShowDuration, 3, 30, u8(
+                            string.format("показывать %d сек.", imcfg.notifyShowDuration[0]))) then
+                            cfg.notifyShowDuration = imcfg.notifyShowDuration[0];
+                            save()
+                        end
+                        imgui.Hint(
+                            "Как долго показывать всплывающее\nуведомление.")
+                        imgui.PopItemWidth()
+                        imgui.EndChild()
+                        imgui.PopStyleColor()
+                    end
+
+                    if cfg.cheatModeEnabled then
+                        imgui.Spacing()
+                        imgui.Separator()
+                        imgui.Spacing()
+
+                        imgui.TextColoredRGB("{87CEFA}Окно уведомлений:")
+                        if imgui.ToggleButton(
+                            u8 "Уведомления автосбора##imcfg_notifyAutoCollectEnabled",
+                            imcfg.notifyAutoCollectEnabled) then
+                            cfg.notifyAutoCollectEnabled = imcfg.notifyAutoCollectEnabled[0];
+                            save()
+                        end
+                        imgui.Hint(
+                            "Показывать окно уведомлений для автосбора\nи умного автосбора (обратный отсчёт, статус сбора).")
+
+                        imgui.PushItemWidth(-1)
+                        if imgui.SliderInt("##nBefore", imcfg.notifyBeforeSec, 30, 600,
+                            u8(string.format("за %d сек.", imcfg.notifyBeforeSec[0]))) then
+                            cfg.notifyBeforeSec = imcfg.notifyBeforeSec[0];
+                            save()
+                        end
+                        imgui.Hint(
+                            "За сколько секунд до автосбора показывать\nокно с обратным отсчётом.")
+
+                        imgui.PopItemWidth()
+                        imgui.Spacing()
+                        imgui.Separator()
+                        imgui.TextColoredRGB("{87CEFA}Предпросмотр")
+                        if imgui.Selectable(u8 "Предпросмотр окна", false) then
+                            data.notifyWindow.btcAmount = 150
+                            data.notifyWindow.mode = 'reminder'
+                            data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
+                            data.notifyWindow.isPreview = true
+                            data.notifyWindow.show[0] = true
+                        end
+                        imgui.Hint(
+                            "Показать пример окна уведомления.\nПеретащите его мышью — позиция\nавтоматически сохранится.\nСпустя несколько секунд окно пропадё.")
                     end
                 end
             end
-        end
-        imgui.PopStyleColor()
 
-        imgui.End()
+        elseif data.settingsTab == 3 then
+            imgui.TextColoredRGB("{87CEFA}Интерфейс стойки")
+            imgui.Text(u8 "Порядок видеокарт:")
+            imgui.PushItemWidth(-1)
+            if imgui.BeginCombo("##rackSortMode", rackSortItems[imcfg.rackSortMode[0] + 1]) then
+                for i, label in ipairs(rackSortItems) do
+                    if imgui.Selectable(label, imcfg.rackSortMode[0] == i - 1) then
+                        imcfg.rackSortMode[0] = i - 1
+                        cfg.rackSortMode = i - 1
+                        save()
+                    end
+                end
+                imgui.EndCombo()
+            end
+            imgui.PopItemWidth()
+            if imgui.ToggleButton(
+                u8 "Показывать исходную строку при наведении##imcfg_rackShowRawTooltip",
+                imcfg.rackShowRawTooltip) then
+                cfg.rackShowRawTooltip = imcfg.rackShowRawTooltip[0]
+                save()
+            end
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+            imgui.TextColoredRGB("{87CEFA}Пауза на PayDay")
+            if imgui.ToggleButton(
+                u8 "Приостанавливать действия на PayDay##imcfg_pauseOnPayday",
+                imcfg.pauseOnPayday) then
+                cfg.pauseOnPayday = imcfg.pauseOnPayday[0];
+                save()
+            end
+            imgui.Hint("Делать паузу во время PayDay.")
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Ожидание подключения:")
+
+            if imgui.ToggleButton(u8 "Ждать подключения к серверу##imcfg_waitForConnection",
+                imcfg.waitForConnection) then
+                cfg.waitForConnection = imcfg.waitForConnection[0];
+                save()
+            end
+            imgui.Hint(
+                "Если вы не подключены к серверу — все автодействия\n" ..
+                    "приостанавливаются до момента подключения.\n\n" ..
+                    "После подключения ждё указанное ниже время,\n" ..
+                    "прежде чем возобновить автодействия.")
+
+            if cfg.waitForConnection then
+                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+                imgui.BeginChild("##connSub", imgui.ImVec2(0, 70), true,
+                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                imgui.PushItemWidth(-1)
+                if imgui.SliderInt("##delayAfterConnect", imcfg.delayAfterConnectMin, 5, 20, u8(
+                    string.format("задержка %d мин. после подключения",
+                        imcfg.delayAfterConnectMin[0]))) then
+                    cfg.delayAfterConnectMin = imcfg.delayAfterConnectMin[0];
+                    save()
+                end
+                imgui.PopItemWidth()
+
+                if data.connectionState.connected then
+                    local waitLeft = data.connectionState.readyAfterConnect - os.time()
+                    if waitLeft > 0 then
+                        imgui.TextColoredRGB(string.format("{FFE133}Активация через: {FFFFFF}%s",
+                            formatTimeLeft(waitLeft)))
+                    else
+                        imgui.TextColoredRGB("{BEF781}Статус: подключён")
+                    end
+                else
+                    imgui.TextColoredRGB("{FF6B6B}Статус: не в игре")
+                end
+
+                imgui.EndChild()
+                imgui.PopStyleColor()
+            end
+
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Скорость диалогов:")
+            imgui.PushItemWidth(-1)
+            if imgui.SliderInt("##pause", imcfg.pause_duration, 150, 300, u8 "%d мс") then
+                cfg.pause_duration = imcfg.pause_duration[0];
+                save()
+            end
+            imgui.Hint("Пауза между диалогами.")
+            if imgui.SliderInt("##count", imcfg.count_action, 1, 20,
+                u8(string.format("пауза каждые %d", imcfg.count_action[0]))) then
+                cfg.count_action = imcfg.count_action[0];
+                save()
+            end
+            imgui.Hint("Количество взаимодействий с диалогами до паузы.")
+            imgui.PopItemWidth()
+
+            -- Вкладка 4: Отладка
+        elseif data.settingsTab == 4 and cfg.debug then
+            imgui.TextColoredRGB("{FFE133}Инструменты отладки")
+            imgui.Spacing()
+
+            local dbgTabs = {u8 "Таймеры", u8 "Состояние", u8 "Действия"}
+            local dbgCount = #dbgTabs
+            local dbgAvailable = imgui.GetContentRegionAvail().x
+            local dbgTotal = dbgAvailable * 0.92
+            local dbgW = (dbgTotal - imStyle.ItemSpacing.x * (dbgCount - 1)) / dbgCount
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + (dbgAvailable - dbgTotal) / 2)
+            renderAnimatedTabHighlight("debug", data.debugSubTab, dbgCount, dbgTotal, 30, imStyle.ItemSpacing.x)
+            for di, dl in ipairs(dbgTabs) do
+                if di > 1 then
+                    imgui.SameLine(0, imStyle.ItemSpacing.x)
+                end
+                imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.11, 0.12, 0.16, 0.45))
+                imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.20, 0.30, 0.48, 1))
+                imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.32, 0.50, 1))
+                if imgui.Button(dl .. "##dbgSub", imgui.ImVec2(dbgW, 30)) then
+                    data.debugSubTab = di - 1
+                end
+                imgui.PopStyleColor(3)
+            end
+            imgui.Spacing()
+
+            if data.debugSubTab == 0 then
+                imgui.TextColoredRGB("{87CEFA}Автосбор по расписанию:")
+                for _, sec in ipairs({15, 30}) do
+                    if imgui.Selectable(u8(string.format("Сработает через %d сек.", sec)), false) then
+                        cfg.lastCollectTime = os.time() - collectTool.getInterval() + sec;
+                        save()
+                        utils.addChat(string.format("{FFE133}DEBUG: автосбор через %d сек.", sec))
+                    end
+                end
+                if imgui.Selectable(
+                    u8 "Сбросить таймер (следующий — по расписанию)", false) then
+                    cfg.lastCollectTime = os.time()
+                    collectTool.resetPendingDelay()
+                    save()
+                end
+                if imgui.Selectable(u8 "Запустить сбор немедленно", false) then
+                    cfg.lastCollectTime = 0;
+                    save()
+                end
+
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Умный автосбор:")
+                for _, btc in ipairs({10, 50, 100}) do
+                    if imgui.Selectable(u8(string.format("Установить цель: %d BTC", btc)), false) then
+                        cfg.smartCollectTarget = btc;
+                        imcfg.smartCollectTarget[0] = btc
+                        cfg.lastCollectTime = 0;
+                        save()
+                    end
+                end
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Фоновое обновление:")
+                do
+                    local refLeft = (cfg.lastAutoRefreshTime + cfg.autoRefreshInterval * 60) - os.time()
+                    imgui.TextColoredRGB(string.format("{808080}До обновления: {FFFFFF}%s",
+                        refLeft > 0 and formatTimeLeft(refLeft) or "сейчас"))
+                    imgui.TextColoredRGB(string.format("{808080}Последнее: {FFFFFF}%s",
+                        cfg.lastAutoRefreshTime > 0 and os.date('%H:%M:%S', cfg.lastAutoRefreshTime) or "никогда"))
+                end
+                if imgui.Selectable(u8 "Запустить фоновое обновление сейчас", false) then
+                    if not data.working then
+                        lua_thread.create(function()
+                            autoRefreshTool.runBackground()
+                        end)
+                    end
+                end
+                for _, sec in ipairs({10, 30}) do
+                    if imgui.Selectable(u8(string.format("Обновление через %d сек.", sec)), false) then
+                        cfg.lastAutoRefreshTime = os.time() - cfg.autoRefreshInterval * 60 + sec;
+                        save()
+                    end
+                end
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Рандомная задержка:")
+                imgui.TextColoredRGB(string.format("{808080}Locked: {FFFFFF}%s", tostring(data.pendingCollectLocked)))
+                if data.pendingCollectLocked then
+                    local pLeft = data.pendingCollectAt - os.time()
+                    imgui.TextColoredRGB(string.format("{808080}Осталось: %s%s",
+                        pLeft > 0 and "{FFFFFF}" or "{BEF781}", pLeft > 0 and formatTimeLeft(pLeft) or "сейчас!"))
+                end
+                if imgui.Selectable(u8 "Задержка 15 сек.", false) then
+                    data.pendingCollectAt = os.time() + 15;
+                    data.pendingCollectLocked = true
+                end
+                if imgui.Selectable(u8 "Задержка 60 сек.", false) then
+                    data.pendingCollectAt = os.time() + 60;
+                    data.pendingCollectLocked = true
+                end
+                if imgui.Selectable(u8 "Снять задержку (немедленно)", false) then
+                    data.pendingCollectAt = os.time() - 1
+                    if not data.pendingCollectLocked then
+                        data.pendingCollectLocked = true
+                    end
+                end
+                if imgui.Selectable(u8 "Отменить задержку", false) then
+                    data.pendingCollectLocked = false;
+                    data.pendingCollectAt = 0
+                end
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}PayDay:")
+                if imgui.Selectable(u8(string.format("Имитация: %s", data.debugForcePayday and
+                    "остановить" or "запустить")), false) then
+                    data.debugForcePayday = not data.debugForcePayday
+                end
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Тест уведомлений:")
+                if imgui.Selectable(u8 "reminder", false) then
+                    data.notifyWindow.btcAmount = 250;
+                    data.notifyWindow.mode = 'reminder'
+                    data.notifyWindow.autoHideAt = os.time() + cfg.notifyShowDuration
+                    data.notifyWindow.isPreview = true
+                    data.notifyWindow.show[0] = true
+                end
+                if imgui.Selectable(u8 "countdown (30с)", false) then
+                    if cfg.notifyAutoCollectEnabled then
+                        data.notifyWindow.countdownTarget = os.time() + 30
+                        data.notifyWindow.mode = 'countdown';
+                        data.notifyWindow.autoHideAt = 0
+                        data.notifyWindow.show[0] = true
+                    end
+                end
+                if imgui.Selectable(u8 "collecting", false) then
+                    if cfg.notifyAutoCollectEnabled then
+                        data.notifyWindow.mode = 'collecting';
+                        data.notifyWindow.autoHideAt = 0
+                        data.notifyWindow.show[0] = true
+                    end
+                end
+                if imgui.Selectable(u8 "Скрыть", false) then
+                    data.notifyWindow.show[0] = false
+                end
+            elseif data.debugSubTab == 1 then
+                imgui.TextColoredRGB("{87CEFA}Текущее состояние:")
+                imgui.TextColoredRGB(string.format("{808080}Задача: {FFFFFF}%s",
+                    data.taskTypeNow ~= '' and data.taskTypeNow or "нет"))
+                imgui.TextColoredRGB(string.format("{808080}working: {FFFFFF}%s", tostring(data.working)))
+                imgui.TextColoredRGB(string.format("{808080}isFlashminer: {FFFFFF}%s", tostring(data.isFlashminer)))
+                imgui.TextColoredRGB(string.format("{808080}Домов: {FFFFFF}%d", #data.dialogData.flashminer))
+                imgui.TextColoredRGB(string.format("{808080}Карт: {FFFFFF}%d", #data.dialogData.videocards))
+                imgui.TextColoredRGB(string.format("{808080}Прогресс: {FFFFFF}%d/%d  %d/%d",
+                    data.progressCurrent, data.progressTotal, data.progressHouseCurrent, data.progressHouseTotal))
+
+                imgui.TextColoredRGB(string.format("{808080}pendingLocked: {FFFFFF}%s",
+                    tostring(data.pendingCollectLocked)))
+                if data.pendingCollectLocked then
+                    imgui.TextColoredRGB(string.format("{808080}pendingAt: {FFFFFF}%s (%s)",
+                        os.date('%H:%M:%S', data.pendingCollectAt), formatTimeLeft(
+                            math.max(0, data.pendingCollectAt - os.time()))))
+                end
+                imgui.TextColoredRGB(string.format("{808080}notifyAuto: {FFFFFF}%s",
+                    tostring(cfg.notifyAutoCollectEnabled)))
+                imgui.TextColoredRGB(string.format("{808080}autoRefresh: {FFFFFF}%s (%dм)",
+                    tostring(cfg.autoRefreshEnabled), cfg.autoRefreshInterval))
+                imgui.TextColoredRGB(string.format("{808080}randomDelay: {FFFFFF}%s (%d-%d)",
+                    tostring(cfg.randomDelayEnabled), cfg.randomDelayMin, cfg.randomDelayMax))
+                imgui.TextColoredRGB(string.format("{808080}notifyMode: {FFFFFF}%s",
+                    data.notifyWindow.mode ~= '' and data.notifyWindow.mode or "нет"))
+                imgui.TextColoredRGB(string.format("{808080}background: {FFFFFF}%s",
+                    tostring(data.backgroundSessionActive)))
+                imgui.TextColoredRGB(string.format("{808080}connected: {FFFFFF}%s",
+                    tostring(data.connectionState.connected)))
+                if data.connectionState.readyAfterConnect > os.time() then
+                    imgui.TextColoredRGB(string.format("{808080}ready in: {FFE133}%s", formatTimeLeft(
+                        data.connectionState.readyAfterConnect - os.time())))
+                end
+                local postponed = autoRefreshTool.getPostponedUntil()
+                if postponed > os.time() then
+                    imgui.TextColoredRGB(string.format("{808080}refresh postponed: {FFE133}%s",
+                        formatTimeLeft(postponed - os.time())))
+                end
+                imgui.TextColoredRGB(string.format("{808080}scanDone: {FFFFFF}%s", tostring(data.initialScanCompleted)))
+                do
+                    local _tl = collectTool.getTimeUntil()
+                    imgui.TextColoredRGB(string.format("{808080}До автосбора: {FFFFFF}%s",
+                        _tl <= 0 and "уже пора!" or formatTimeLeft(_tl)))
+                end
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Игрок:")
+                local px, py, pz = getCharCoordinates(PLAYER_PED)
+                imgui.TextColoredRGB(string.format("{808080}Координаты: {FFFFFF}%.2f, %.2f, %.2f", px, py, pz))
+                local interior = getActiveInterior()
+                imgui.TextColoredRGB(string.format("{808080}Интерьер: {FFFFFF}%d", interior or 0))
+
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Заточка:")
+                imgui.TextColoredRGB(string.format("{808080}isOn: {FFFFFF}%s {808080}step: {FFFFFF}%d",
+                    tostring(data.improve.isOn), data.improve.step))
+                imgui.TextColoredRGB(string.format(
+                    "{808080}Карт в кэше: {FFFFFF}%d {808080}probed: {FFFFFF}%s {808080}probing: {FFFFFF}%s",
+                    #data.improve.cef.cards, tostring(data.improve.cef.probed), tostring(data.improve.cef.probing)))
+                imgui.TextColoredRGB(string.format(
+                    "{808080}oils.busy: {FFFFFF}%s {808080}busyAt: {FFFFFF}%.1f с назад",
+                    tostring(data.improve.oils.busy),
+                    data.improve.oils.busyAt > 0 and (os.clock() - data.improve.oils.busyAt) or 0))
+                imgui.TextColoredRGB(
+                    string.format("{808080}suppressDialogs: {FFFFFF}%s", tostring(data.suppressDialogs)))
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Диагностика:")
+                do
+                    local hasHouses = #data.dialogData.flashminer > 0
+                    local hasStatuses, hasSnapshots, staleCount = false, false, 0
+                    local now2 = os.time()
+                    for _, h in ipairs(data.dialogData.flashminer) do
+                        local st = data.houseStatuses[h.house_number]
+                        if st and st.lastCheck > 0 then
+                            hasStatuses = true
+                            if (now2 - st.lastCheck) > 3600 then
+                                staleCount = staleCount + 1
+                            end
+                        end
+                        local snap = cfg.cardSnapshots[tostring(h.house_number)]
+                        if snap and snap.dailyBtcRate and snap.dailyBtcRate > 0 then
+                            hasSnapshots = true
+                        end
+                    end
+                    imgui.TextColoredRGB(string.format("{808080}Домов: %s%d",
+                        hasHouses and "{BEF781}" or "{FF3333}", #data.dialogData.flashminer))
+                    imgui.TextColoredRGB(string.format("{808080}Статусы: %s",
+                        hasStatuses and "{BEF781}да" or "{FF3333}нет"))
+                    imgui.TextColoredRGB(string.format("{808080}Снапшоты: %s",
+                        hasSnapshots and "{BEF781}да" or "{FFE133}нет"))
+                    if staleCount > 0 then
+                        imgui.TextColoredRGB(string.format("{FFE133}Устаревших (>1ч): %d", staleCount))
+                    end
+                    imgui.TextColoredRGB(string.format("{808080}Готов к авто: %s",
+                        (hasHouses and hasStatuses) and "{BEF781}да" or "{FF3333}нет"))
+                    imgui.TextColoredRGB(string.format("{808080}Готов к умному: %s", (hasHouses and
+                        hasStatuses and hasSnapshots) and "{BEF781}да" or "{FF3333}нет"))
+                end
+
+                imgui.Spacing()
+                if imgui.Selectable(u8 "Показать окно обновления скрипта", false) then
+                    updateState.showPopup[0] = true
+                end
+
+                imgui.Spacing()
+                imgui.TextColoredRGB("{87CEFA}Снапшоты:")
+                if #data.dialogData.flashminer > 0 then
+                    for _, h in ipairs(data.dialogData.flashminer) do
+                        local snap = cfg.cardSnapshots[tostring(h.house_number)]
+                        local st = data.houseStatuses[h.house_number]
+                        local rate = (snap and snap.dailyBtcRate) and string.format("%.3f", snap.dailyBtcRate) or "-"
+                        local obs = (snap and snap.incomeObs) and #snap.incomeObs or 0
+                        local age = (st and st.lastCheck > 0) and
+                                        string.format("%dм", math.floor((os.time() - st.lastCheck) / 60)) or "-"
+                        imgui.TextColoredRGB(string.format("{808080}№%d: {FFFFFF}%s {808080}(%d) {808080}%s",
+                            h.house_number, rate, obs, age))
+                    end
+                else
+                    imgui.TextColoredRGB("{808080}Нет домов.")
+                end
+            elseif data.debugSubTab == 2 then
+                imgui.TextColoredRGB("Действия:")
+                if imgui.Selectable(u8 "Сбросить working + stopAction", false) then
+                    taskState.setWorking(false);
+                    data.stopAction = false;
+                    data.taskTypeNow = nil
+                    data.isWaitingPayday = false;
+                    data.skipPayday = false
+                    progressTracker.reset()
+                end
+                if imgui.Selectable(u8 "Закрыть диалог", false) then
+                    if sampIsDialogActive() then
+                        sampCloseCurrentDialogWithButton(0)
+                    end
+                end
+                if imgui.Selectable(u8 "Сбросить статусы домов", false) then
+                    data.houseStatuses = {};
+                    data.initialScanCompleted = false
+                end
+                if imgui.Selectable(u8 "Сбросить снапшоты", false) then
+                    cfg.cardSnapshots = {};
+                    save()
+                end
+                if imgui.Selectable(u8 "Сбросить pending", false) then
+                    data.pendingCollectLocked = false;
+                    data.pendingCollectAt = 0
+                end
+                if imgui.Selectable(u8 "Сбросить таймер обновления", false) then
+                    cfg.lastAutoRefreshTime = 0;
+                    save()
+                end
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Действия с домами:")
+                if imgui.Selectable(u8 "Зайти в выбранный дом", false) then
+                    if #data.dialogData.flashminer > 0 and not data.working then
+                        local house = data.dialogData.flashminer[data.selectedHouseIndex or 1]
+                        lua_thread.create(function()
+                            taskState.setWorking(true);
+                            data.taskTypeNow = 'updateStatuses'
+                            sampSendDialogResponse(data.dFlashminerId, 1, house.index - 1, "")
+                            sampSendDialogResponse(dialogIdTable.houseFlashMinerDialogId, 0, 0, "")
+                            taskState.setWorking(false);
+                            data.taskTypeNow = nil
+                        end)
+                    end
+                end
+                if imgui.Selectable(u8 "Сбросить выбранный дом (заново скан)", false) then
+                    if #data.dialogData.flashminer > 0 then
+                        local house = data.dialogData.flashminer[data.selectedHouseIndex or 1]
+                        if house then
+                            local key = tostring(house.house_number)
+                            cfg.basementScanned[key] = nil
+                            cfg.housesWithoutBasement[key] = nil
+                            cfg.cardSnapshots[key] = nil
+                            cfg.excludedHouses[key] = nil
+                            data.houseStatuses[house.house_number] = nil
+                            cfg.lastHouseListHash = ''
+                            data.initialScanCompleted = false
+                            save()
+                            utils.addChat(string.format(
+                                "{FFE133}DEBUG: дом №%s сброшен — отсканируется при следующем /flashminer.",
+                                key))
+                        end
+                    end
+                end
+                imgui.Hint(
+                    "Удаляет статус/снапшот/флаги подвала для выбранного дома.\n" ..
+                        "При следующем открытии /flashminer сработает скан подвала.")
+                if imgui.Selectable(u8 "Лог видеокарт", false) then
+                    for i, card in ipairs(data.dialogData.videocards) do
+                        utils.debugChat(string.format("{808080}[%d] lvl=%d %s work=%s btc=%.2f cool=%.1f%%", i,
+                            card.level, card.card_type or "?", tostring(card.working), card.btc_full, card.coolant))
+                    end
+                end
+                if imgui.Selectable(u8 "Лог исключённых", false) then
+                    for houseNum in pairs(cfg.excludedHouses) do
+                        utils.debugChat(string.format("{808080}  №%s", houseNum))
+                    end
+                end
+                if imgui.Selectable(u8 "Лог без подвала", false) then
+                    for houseNum in pairs(cfg.housesWithoutBasement) do
+                        utils.debugChat(string.format("{808080}  №%s", houseNum))
+                    end
+                end
+
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Переключения:")
+                if imgui.Selectable(u8(string.format("silentMode: %s", cfg.silentMode and "выкл" or "вкл")),
+                    false) then
+                    cfg.silentMode = not cfg.silentMode;
+                    imcfg.silentMode[0] = cfg.silentMode;
+                    save()
+                end
+                if imgui.Selectable(
+                    u8(string.format("pauseOnPayday: %s", cfg.pauseOnPayday and "выкл" or "вкл")), false) then
+                    cfg.pauseOnPayday = not cfg.pauseOnPayday;
+                    imcfg.pauseOnPayday[0] = cfg.pauseOnPayday;
+                    save()
+                end
+                if imgui.Selectable(u8(string.format("isViceCity: %s", data.isViceCity and "выкл" or "вкл")),
+                    false) then
+                    data.isViceCity = not data.isViceCity
+                end
+                if imgui.Selectable(u8(string.format("notifyAuto: %s",
+                    cfg.notifyAutoCollectEnabled and "выкл" or "вкл")), false) then
+                    cfg.notifyAutoCollectEnabled = not cfg.notifyAutoCollectEnabled
+                    imcfg.notifyAutoCollectEnabled[0] = cfg.notifyAutoCollectEnabled;
+                    save()
+                end
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Заточка:")
+                if imgui.Selectable(u8 "Открыть/закрыть окно заточки", false) then
+                    data.showImproveWindow[0] = not data.showImproveWindow[0]
+                end
+                if imgui.Selectable(u8 "Сбросить oils.busy", false) then
+                    data.improve.oils.busy = false
+                    data.improve.oils.busyAt = 0
+                    utils.addChat("{FFE133}DEBUG: oils.busy сброшен.")
+                end
+                if imgui.Selectable(u8 "Сбросить probing/probed", false) then
+                    data.improve.cef.probing = false
+                    data.improve.cef.probed = false
+                    data.improve.cef.probeDone = false
+                    utils.addChat("{FFE133}DEBUG: probing/probed сброшены.")
+                end
+                if imgui.Selectable(u8 "Принудительно остановить заточку", false) then
+                    improveTool.stop("DEBUG")
+                end
+                imgui.Spacing()
+                imgui.Separator()
+                imgui.Spacing()
+
+                imgui.TextColoredRGB("{87CEFA}Тестовые дома:")
+                if imgui.Selectable(u8 "Добавить тестовый дом", false) then
+                    local nextNum = 9001
+                    for _, h in ipairs(data.dialogData.flashminer) do
+                        if h.house_number >= nextNum then
+                            nextNum = h.house_number + 1
+                        end
+                    end
+                    local cities = {"З", "А", "Л", "У", "П", "Автосбор"}
+                    local city = cities[math.random(#cities)]
+                    local maxB = math.random(20, 100) * 1000000
+                    local bal = math.random(0, maxB)
+
+                    table.insert(data.dialogData.flashminer, {
+                        index = #data.dialogData.flashminer + 1,
+                        name = "Дом №" .. nextNum,
+                        house_number = nextNum,
+                        city = city,
+                        tax = math.random(1, 100) * 1000,
+                        cycles = math.random(0, 5),
+                        balance = bal,
+                        max_balance = maxB,
+                        raw_line = "FAKE",
+                        isFake = true
+                    })
+
+                    local fakeCoolant = math.random(20, 100)
+                    data.houseStatuses[nextNum] = {
+                        status = bal < 5000000 and "warning" or "good",
+                        lastCheck = os.time() - math.random(60, 3600),
+                        needsAttention = false,
+                        lastBalance = bal,
+                        earnings = {
+                            btc = math.random(0, 100),
+                            asc = math.random(0, 50) or 0
+                        },
+                        cardLevels = {},
+                        issues = {},
+                        minCoolant = fakeCoolant,
+                        coolantsNeeded = fakeCoolant < 50 and math.random(1, 5) or 0,
+                        isFake = true
+                    }
+
+                    cfg.cardSnapshots[tostring(nextNum)] = {
+                        dailyBtcRate = math.random(10, 80) / 10,
+                        dailyAscRate = (math.random(5, 30) / 10) or 0,
+                        time = os.time(),
+                        incomeObs = {},
+                        isFake = true
+                    }
+
+                    utils.debugChat(string.format(
+                        "{FFE133}DEBUG: добавлен тестовый дом №%d (%s, $%s).", nextNum, city,
+                        utils.formatNumber(bal)))
+                end
+
+                if imgui.Selectable(u8 "Удалить все тестовые дома", false) then
+                    local removed = 0
+                    local kept = {}
+                    for _, h in ipairs(data.dialogData.flashminer) do
+                        if h.isFake then
+                            data.houseStatuses[h.house_number] = nil
+                            cfg.cardSnapshots[tostring(h.house_number)] = nil
+                            removed = removed + 1
+                        else
+                            table.insert(kept, h)
+                        end
+                    end
+                    data.dialogData.flashminer = kept
+                    for k, snap in pairs(cfg.cardSnapshots) do
+                        if type(snap) == 'table' and snap.isFake then
+                            cfg.cardSnapshots[k] = nil
+                            removed = removed + 1
+                        end
+                    end
+                    save()
+                    utils.debugChat(string.format("{FFE133}DEBUG: удалено тестовых записей: %d.",
+                        removed))
+                end
+            end
+        end
     end
+    if not blockSettingsWheel then
+        imgui.Scroller("settings_scroll_" .. data.settingsTab, 40, 350,
+            imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+    end
+    imgui.EndChild()
     if data.statsResetConfirm then
         renderResetConfirm("statsResetConfirm", data.statsResetTimer,
             "Сбросить статистику дохода?",
-            "Накопленные данные о доходах будут стёрты безвозвратно.",
+            "Накопленные данные о доходах будут стёрт безвозвратно.",
             function()
                 resetIncomeRates()
                 data.statsResetConfirm = false
@@ -8580,16 +8858,24 @@ end, function(self)
                 data.settingsResetConfirm = false
             end)
     end
+end
+
+imgui.OnFrame(function()
+    return data.showHouseControlWindow[0] and data.mainMenuTab == "settings"
+end, function()
+    renderMainMenuSection(function()
+        renderSettingsPage()
+    end)
 end)
 
 -- окно обновления
 imgui.OnFrame(function()
     return updateState.showPopup[0]
-end, function(self)
+end, function()
     applyStyle()
     local sw, sh = getScreenResolution()
     imgui.SetNextWindowPos(imgui.ImVec2(sw / 2, sh / 2), imgui.Cond.Always, imgui.ImVec2(0.5, 0.5))
-    imgui.SetNextWindowSize(imgui.ImVec2(560, 0), imgui.Cond.Always)
+    imgui.SetNextWindowSize(imgui.ImVec2(600, 0), imgui.Cond.Always)
     imgui.SetNextWindowFocus()
 
     if imgui.Begin("##updateWin", updateState.showPopup,
@@ -8599,106 +8885,91 @@ end, function(self)
         local winW = imgui.GetWindowWidth()
         local style = imgui.GetStyle()
 
-        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.13, 0.16, 0.22, 1))
-        imgui.BeginChild("##updHeader", imgui.ImVec2(-1, 50), true,
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.11, 0.14, 0.20, 1))
+        imgui.BeginChild("##update_header", imgui.ImVec2(-1, 56), true,
             imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-
-        local headerW = imgui.GetWindowWidth()
         local titleIcon = fa.ARROW_UP_FROM_BRACKET
         local titleText = u8 "Доступно обновление"
-
-        local rowW = imgui.CalcTextSize(titleIcon).x + 12 + imgui.CalcTextSize(titleText).x
-        imgui.SetCursorPos(imgui.ImVec2((headerW - rowW) / 2, 14))
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.78, 0.20, 1.0))
+        local titleWidth = imgui.CalcTextSize(titleIcon).x + 10 + imgui.CalcTextSize(titleText).x
+        imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - titleWidth) / 2, 17))
+        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.35, 0.72, 1.0, 1.0))
         imgui.Text(titleIcon)
         imgui.PopStyleColor()
-        imgui.SameLine(0, 12)
-        imgui.TextColoredRGB("{FFFFFF}Доступно обновление")
-
+        imgui.SameLine(0, 10)
+        imgui.Text(titleText)
+        imgui.SetCursorPos(imgui.ImVec2(imgui.GetWindowWidth() - 37, 10))
+        if imgui.Button(fa.XMARK .. "##update_close", imgui.ImVec2(26, 26)) then
+            updateState.showPopup[0] = false
+            updateState.declined = true
+        end
         imgui.EndChild()
         imgui.PopStyleColor()
 
         imgui.Spacing()
+        local currentVersion = tostring(script.this.version or "?")
+        local latestVersion = tostring(updateState.latestVersion or "?")
+        local cardsWidth = imgui.GetContentRegionAvail().x
+        local cardWidth = (cardsWidth - style.ItemSpacing.x) / 2
 
-        local cur = tostring(script.this.version or "?")
-        local new = tostring(updateState.latestVersion or "?")
-
-        local sLabelL = u8 "Текущая"
-        local sLabelR = u8 "Новая"
-        local arrow = fa.ARROW_RIGHT
-        local wLabelL = imgui.CalcTextSize(sLabelL).x
-        local wLabelR = imgui.CalcTextSize(sLabelR).x
-        local wArrow = imgui.CalcTextSize(arrow).x
-        local wCur = imgui.CalcTextSize(cur).x
-        local wNew = imgui.CalcTextSize(new).x
-        local rowW = wLabelL + 8 + wCur + 18 + wArrow + 18 + wLabelR + 8 + wNew
-
-        imgui.SetCursorPosX((winW - rowW) / 2)
-        imgui.TextColoredRGB("{808080}" .. "Текущая")
-        imgui.SameLine(0, 8)
-        imgui.TextColoredRGB("{B0B0B0}" .. cur)
-        imgui.SameLine(0, 18)
-        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.78, 0.20, 1.0))
-        imgui.Text(arrow)
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.08, 0.09, 0.12, 1))
+        imgui.BeginChild("##update_current", imgui.ImVec2(cardWidth, 62), true,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        imgui.TextDisabled(u8 "Установлено")
+        imgui.TextColoredRGB("{B0B0B0}v" .. currentVersion)
+        imgui.EndChild()
         imgui.PopStyleColor()
-        imgui.SameLine(0, 18)
-        imgui.TextColoredRGB("{BEF781}" .. "Новая")
-        imgui.SameLine(0, 8)
-        imgui.TextColoredRGB("{FFFFFF}" .. new)
-
-        imgui.Spacing()
-        imgui.Spacing()
-
-        if updateState.changelog ~= "" then
-            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(1.0, 0.65, 0.20, 1.0))
-            imgui.Text(fa.CLOCK_ROTATE_LEFT)
-            imgui.PopStyleColor()
-            imgui.SameLine(0, 6)
-            imgui.TextColoredRGB("{FFA500}Что нового")
-            imgui.SameLine(0, 8)
-            imgui.TextColoredRGB("{606060}— список изменений в новой версии")
-            imgui.Spacing()
-
-            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
-            imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0.20, 0.22, 0.28, 1))
-            imgui.BeginChild("##updateChangelog", imgui.ImVec2(0, 150), true, imgui.WindowFlags.NoScrollWithMouse)
-            imgui.Scroller("update_changelog", 20, 300, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
-            imgui.TextColoredRGB(updateState.changelog)
-            imgui.EndChild()
-            imgui.PopStyleColor(2)
-
-            imgui.Spacing()
-        end
-
-        local halfW = (winW - style.WindowPadding.x * 2 - style.ItemSpacing.x) / 2
-
-        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.55, 0.22, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.25, 0.70, 0.28, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.12, 0.40, 0.15, 1))
-        if imgui.Button(fa.DOWNLOAD .. u8 "  Обновить сейчас", imgui.ImVec2(halfW, 36)) then
-            downloadAndUpdate()
-        end
-        imgui.PopStyleColor(3)
-        imgui.Hint(
-            "Скачать и установить новую версию автоматически.\nСкрипт будет перезагружен.")
 
         imgui.SameLine()
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.08, 0.15, 0.11, 1))
+        imgui.BeginChild("##update_latest", imgui.ImVec2(cardWidth, 62), true,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        imgui.TextColoredRGB("{BEF781}Новая версия")
+        imgui.TextColoredRGB("{FFFFFF}v" .. latestVersion)
+        imgui.EndChild()
+        imgui.PopStyleColor()
 
-        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.18, 0.22, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.26, 0.26, 0.30, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.13, 0.13, 0.16, 1))
-        if imgui.Button(fa.CLOCK .. u8 "  Напомнить позже", imgui.ImVec2(halfW, 36)) then
+        if updateState.changelog ~= "" then
+            imgui.Spacing()
+            imgui.Text(fa.CLOCK_ROTATE_LEFT)
+            imgui.SameLine(0, 6)
+            imgui.TextColoredRGB("{87CEFA}Что изменилось")
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.08, 0.09, 0.12, 1))
+            imgui.BeginChild("##update_changelog", imgui.ImVec2(0, 160), true, imgui.WindowFlags.NoScrollWithMouse)
+            imgui.Scroller("update_changelog", 24, 320, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+            imgui.PushTextWrapPos(imgui.GetCursorPosX() + imgui.GetContentRegionAvail().x)
+            imgui.TextColoredRGB(updateState.changelog)
+            imgui.PopTextWrapPos()
+            imgui.EndChild()
+            imgui.PopStyleColor()
+        end
+
+        imgui.Spacing()
+        imgui.TextDisabled(
+            u8 "После установки скрипт будет автоматически перезагружен.")
+        imgui.Spacing()
+        local halfWidth = (imgui.GetContentRegionAvail().x - style.ItemSpacing.x) / 2
+
+        imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
+        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.18, 0.58, 0.26, 1))
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.24, 0.72, 0.32, 1))
+        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.13, 0.44, 0.19, 1))
+        if imgui.Button(fa.DOWNLOAD .. "  " .. u8("Установить v" .. latestVersion),
+            imgui.ImVec2(halfWidth, 38)) then
+            downloadAndUpdate()
+        end
+        imgui.PopStyleColor(4)
+        imgui.Hint("Скачать обновление и перезагрузить скрипт.")
+
+        imgui.SameLine()
+        if imgui.Button(fa.CLOCK .. u8 "  Напомнить позже", imgui.ImVec2(halfWidth, 38)) then
             updateState.showPopup[0] = false
             updateState.declined = true
         end
-        imgui.PopStyleColor(3)
-        imgui.Hint(
-            "Закрыть окно. Обновление можно будет установить позже из настроек.")
-
-        imgui.Spacing()
+        imgui.Hint("Закрыть окно обновления до следующего запуска.")
         imgui.End()
     end
 end)
+
 -- окно логов
 local _logsSaveT = 0
 local _logsActiveTab = 0
@@ -8708,20 +8979,7 @@ local _logsFlatSig = nil
 local _improveFlatRows = nil
 local _improveFlatSig = nil
 
-imgui.OnFrame(function()
-    return data.showLogsWindow[0]
-end, function(self)
-    applyStyle()
-    local sw, sh = getScreenResolution()
-    local desiredH = (_logsActiveTab == 2) and 800 or 645
-    if _logsActiveTab ~= _logsPrevTab then
-        imgui.SetNextWindowSize(imgui.ImVec2(720, desiredH), imgui.Cond.Always)
-        _logsPrevTab = _logsActiveTab
-    else
-        imgui.SetNextWindowSize(imgui.ImVec2(720, desiredH), imgui.Cond.FirstUseEver)
-    end
-    imgui.SetNextWindowPos(imgui.ImVec2(cfg.logsWindowPosX * sw, cfg.logsWindowPosY * sh), imgui.Cond.FirstUseEver)
-
+function renderLogsPage()
     local function renderLogEntry(entry, childPrefix, h)
         local eIcon, eLabel, eDetail = logsTool.format(entry)
         imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
@@ -8768,343 +9026,104 @@ end, function(self)
         end
     end
 
-    if imgui.Begin("##logsWin", data.showLogsWindow,
-        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoTitleBar) then
-        local wp = imgui.GetWindowPos()
-        local nx, ny = wp.x / sw, wp.y / sh
-        if math.abs(nx - cfg.logsWindowPosX) > 0.003 or math.abs(ny - cfg.logsWindowPosY) > 0.003 then
-            cfg.logsWindowPosX, cfg.logsWindowPosY = nx, ny
-            local t = os.clock()
-            if t - _logsSaveT > 1.5 then
-                _logsSaveT = t;
-                save()
+    local imStyle = imgui.GetStyle()
+    local winW = imgui.GetWindowWidth()
+
+    imgui.SetCursorPosY(imStyle.ItemSpacing.y)
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.35, 0.10, 0.10, 1))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.55, 0.15, 0.15, 1))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.25, 0.07, 0.07, 1))
+    if imgui.Button(fa.TRASH .. "##logsReset", imgui.ImVec2(40, 22)) then
+        data.logsResetConfirm = true
+        data.logsResetTimer = os.clock()
+        data.logsResetMode = (_logsActiveTab == 2) and "improve" or "all"
+    end
+    imgui.PopStyleColor(3)
+    imgui.Hint(_logsActiveTab == 2 and "Очистить логи заточки" or
+                   "Очистить все логи действий")
+
+    local titleIcon = fa.CLOCK_ROTATE_LEFT
+    local titleText = u8 "Журнал"
+    local iconW2 = imgui.CalcTextSize(titleIcon).x
+    local textW2 = imgui.CalcTextSize(titleText).x
+    local totalW2 = iconW2 + 8 + textW2
+    imgui.SetCursorPos(imgui.ImVec2((winW - totalW2) / 2, imStyle.ItemSpacing.y + 3))
+    imgui.Text(titleIcon)
+    imgui.SameLine(0, 8)
+    imgui.SetCursorPosY(imStyle.ItemSpacing.y + 3)
+    imgui.TextColoredRGB("{FFFFFF}Журнал")
+    imgui.Separator()
+
+    local dates = {}
+    for d in pairs(logsTool.getAllByDate()) do
+        table.insert(dates, d)
+    end
+    table.sort(dates, function(a, b)
+        local function key(s)
+            local d2, m2, y2 = s:match("(%d+)%.(%d+)%.(%d+)")
+            return string.format("%s%s%s", y2, m2, d2)
+        end
+        return key(a) > key(b)
+    end)
+
+    local cache = logsTool.getCacheSummary()
+    local totalSessions = cache.sessions
+    local dailySums = {}
+    for _, dateStr in ipairs(dates) do
+        local db, da, collectCount = 0, 0, 0
+        for _, e in ipairs(logsTool.getEntriesByDate(dateStr)) do
+            db = db + (e.btc or 0)
+            da = da + (e.asc or 0)
+            local act = e.action or 'collect'
+            if act == 'collect' or act == 'fix' then
+                collectCount = collectCount + 1
             end
         end
+        dailySums[dateStr] = {
+            btc = db,
+            asc = da,
+            count = #logsTool.getEntriesByDate(dateStr),
+            collectCount = collectCount
+        }
+    end
 
-        local imStyle = imgui.GetStyle()
-        local winW = imgui.GetWindowWidth()
+    local tabTotalWidth = winW - imgui.GetStyle().WindowPadding.x * 2
+    local tabW = (tabTotalWidth - imgui.GetStyle().ItemSpacing.x * 2) / 3
+    renderAnimatedTabHighlight("logs", _logsActiveTab, 3, tabTotalWidth, 28, imgui.GetStyle().ItemSpacing.x)
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.09, 0.10, 0.14, 0.45))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.19, 0.25, 1))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.23, 0.29, 1))
+    if imgui.Button(u8 "Общее", imgui.ImVec2(tabW, 28)) then
+        _logsActiveTab = 0
+    end
+    imgui.PopStyleColor(3)
+    imgui.SameLine()
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.09, 0.10, 0.14, 0.45))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.19, 0.25, 1))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.23, 0.29, 1))
+    if imgui.Button(u8 "По дням", imgui.ImVec2(tabW, 28)) then
+        _logsActiveTab = 1
+    end
+    imgui.PopStyleColor(3)
+    imgui.SameLine()
+    imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.09, 0.10, 0.14, 0.45))
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.19, 0.25, 1))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.22, 0.23, 0.29, 1))
+    if imgui.Button(u8 "Заточка", imgui.ImVec2(tabW, 28)) then
+        _logsActiveTab = 2
+    end
+    imgui.PopStyleColor(3)
+    imgui.Separator()
+    if _logsActiveTab == 0 then
+        imgui.Spacing()
+        local colW = math.floor((winW - imgui.GetStyle().WindowPadding.x * 2 - imgui.GetStyle().ItemSpacing.x) * 0.38)
 
-        imgui.SetCursorPosY(imStyle.ItemSpacing.y)
-        imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.35, 0.10, 0.10, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.55, 0.15, 0.15, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.25, 0.07, 0.07, 1))
-        if imgui.Button(fa.TRASH .. "##logsReset", imgui.ImVec2(40, 22)) then
-            data.logsResetConfirm = true
-            data.logsResetTimer = os.clock()
-            data.logsResetMode = (_logsActiveTab == 2) and "improve" or "all"
-        end
-        imgui.PopStyleColor(3)
-        imgui.Hint(_logsActiveTab == 2 and "Очистить логи заточки" or
-                       "Очистить все логи действий")
-
-        local titleIcon = fa.CLOCK_ROTATE_LEFT
-        local titleText = u8 "Логи"
-        local iconW2 = imgui.CalcTextSize(titleIcon).x
-        local textW2 = imgui.CalcTextSize(titleText).x
-        local totalW2 = iconW2 + 8 + textW2
-        imgui.SetCursorPos(imgui.ImVec2((winW - totalW2) / 2, imStyle.ItemSpacing.y + 3))
-        imgui.Text(titleIcon)
-        imgui.SameLine(0, 8)
-        imgui.SetCursorPosY(imStyle.ItemSpacing.y + 3)
-        imgui.TextColoredRGB("{FFFFFF}Логи")
-
-        imgui.SetCursorPos(imgui.ImVec2(winW - 50 - imStyle.ItemSpacing.x, imStyle.ItemSpacing.y))
-        if imgui.Button(fa.XMARK .. "##logsClose", imgui.ImVec2(40, 22)) then
-            data.showLogsWindow[0] = false
-        end
-        imgui.Hint("Закрыть окно логов")
-        imgui.Separator()
-
-        local dates = {}
-        for d in pairs(logsTool.getAllByDate()) do
-            table.insert(dates, d)
-        end
-        table.sort(dates, function(a, b)
-            local function key(s)
-                local d2, m2, y2 = s:match("(%d+)%.(%d+)%.(%d+)")
-                return string.format("%s%s%s", y2, m2, d2)
-            end
-            return key(a) > key(b)
-        end)
-
-        local cache = logsTool.getCacheSummary()
-        local totalSessions = cache.sessions
-        local dailySums = {}
-        for _, dateStr in ipairs(dates) do
-            local db, da, collectCount = 0, 0, 0
-            for _, e in ipairs(logsTool.getEntriesByDate(dateStr)) do
-                db = db + (e.btc or 0)
-                da = da + (e.asc or 0)
-                local act = e.action or 'collect'
-                if act == 'collect' or act == 'fix' then
-                    collectCount = collectCount + 1
-                end
-            end
-            dailySums[dateStr] = {
-                btc = db,
-                asc = da,
-                count = #logsTool.getEntriesByDate(dateStr),
-                collectCount = collectCount
-            }
-        end
-
-        local tabW = (winW - imgui.GetStyle().WindowPadding.x * 2 - imgui.GetStyle().ItemSpacing.x * 2) / 3
-        imgui.PushStyleColor(imgui.Col.Button, _logsActiveTab == 0 and imgui.ImVec4(0.15, 0.22, 0.35, 1) or
-            imgui.ImVec4(0.09, 0.10, 0.14, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.25, 0.40, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.20, 0.28, 0.45, 1))
-        if imgui.Button(u8 "Общее", imgui.ImVec2(tabW, 28)) then
-            _logsActiveTab = 0
-        end
-        imgui.PopStyleColor(3)
-        imgui.SameLine()
-        imgui.PushStyleColor(imgui.Col.Button, _logsActiveTab == 1 and imgui.ImVec4(0.15, 0.22, 0.35, 1) or
-            imgui.ImVec4(0.09, 0.10, 0.14, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.25, 0.40, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.20, 0.28, 0.45, 1))
-        if imgui.Button(u8 "По дням", imgui.ImVec2(tabW, 28)) then
-            _logsActiveTab = 1
-        end
-        imgui.PopStyleColor(3)
-        imgui.SameLine()
-        imgui.PushStyleColor(imgui.Col.Button, _logsActiveTab == 2 and imgui.ImVec4(0.15, 0.22, 0.35, 1) or
-            imgui.ImVec4(0.09, 0.10, 0.14, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(0.18, 0.25, 0.40, 1))
-        imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(0.20, 0.28, 0.45, 1))
-        if imgui.Button(u8 "Заточка", imgui.ImVec2(tabW, 28)) then
-            _logsActiveTab = 2
-        end
-        imgui.PopStyleColor(3)
-        imgui.Separator()
-        if _logsActiveTab == 0 then
-            imgui.Spacing()
-            local colW = math.floor((winW - imgui.GetStyle().WindowPadding.x * 2 - imgui.GetStyle().ItemSpacing.x) *
-                                        0.38)
-
-            -- Левая колонка: общая статистика
-            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
-            if imgui.BeginChild("##logsRightCol", imgui.ImVec2(colW, 0), true, imgui.WindowFlags.NoScrollWithMouse) then
-                local periodLabels = {u8 "Всё время", u8 "Сегодня", u8 "Неделя", u8 "Месяц"}
-                imgui.PushItemWidth(-1)
-                if imgui.BeginCombo("##logsPeriod", periodLabels[data.logsPeriodFilter + 1]) then
-                    for pi = 1, #periodLabels do
-                        local pSel = data.logsPeriodFilter == pi - 1
-                        if imgui.Selectable(periodLabels[pi], pSel) then
-                            data.logsPeriodFilter = pi - 1
-                        end
-                    end
-                    imgui.EndCombo()
-                end
-                imgui.PopItemWidth()
-                imgui.Spacing()
-                imgui.Separator()
-
-                local stats = logsTool.getStats(data.logsPeriodFilter)
-
-                local function StatRow(icon, label, value, color, hint)
-                    imgui.BeginGroup()
-                    imgui.Text(icon)
-                    imgui.SameLine(0, 6)
-                    imgui.TextColoredRGB("{808080}" .. label)
-                    imgui.SameLine(0, 4)
-                    imgui.TextColoredRGB((color or "{FFFFFF}") .. value)
-                    imgui.EndGroup()
-                    if hint then
-                        imgui.Hint(hint)
-                    end
-                end
-
-                imgui.TextColoredRGB("{87CEFA}Криптовалюта:")
-                StatRow(fa.COINS, "Получено BTC:", tostring(stats.btc), "{BEF781}",
-                    "Суммарное количество BTC собранного со всех ферм")
-                StatRow(fa.COINS, "Получено ASC:", tostring(stats.asc), "{FFA500}",
-                    "Суммарное количество ASC собранного со всех ферм")
-                StatRow(fa.ROTATE, "Сессий сбора:", tostring(stats.collectSessions), "{FFFFFF}",
-                    "Количество запусков сбора криптовалюты")
-                imgui.Spacing()
-
-                imgui.TextColoredRGB("{87CEFA}Видеокарты:")
-                StatRow(fa.POWER_OFF, "Включено карт:", tostring(stats.switchOn), "{BEF781}",
-                    "Суммарное количество включённых видеокарт за всё время")
-                StatRow(fa.PLUG, "Выключено карт:", tostring(stats.switchOff), "{F78181}",
-                    "Суммарное количество выключённых видеокарт за всё время")
-                imgui.Spacing()
-
-                imgui.TextColoredRGB("{87CEFA}Охлаждение:")
-                StatRow(fa.DROPLET, "Карт залито:", tostring(stats.coolantCards), "{FFFFFF}",
-                    "Количество видеокарт которым заливалась жидкость")
-
-                StatRow(fa.DROPLET, "Обычной:", stats.coolantBottles .. " шт.", "{87CEFA}",
-                    "Количество флаконов обычной охлаждающей жидкости")
-
-                StatRow(fa.DROPLET, "Супер:", stats.coolantSuper .. " шт.", "{FFE133}",
-                    "Количество флаконов супер охлаждающей жидкости")
-                imgui.Spacing()
-
-                imgui.TextColoredRGB("{87CEFA}Обслуживание:")
-
-                StatRow(fa.DOLLAR_SIGN, "Ферм пополнено на:", "$" .. utils.formatNumber(stats.topup),
-                    "{FFD700}", "Общая сумма пополнений баланса домов")
-                imgui.Spacing()
-
-                imgui.TextColoredRGB("{87CEFA}Всего:")
-                StatRow(fa.CALENDAR_DAYS, "Дней активности:", string.format("%d", #dates), "{FFFFFF}",
-                    "Количество дней в которые были зафиксированы действия")
-                StatRow(fa.CLOCK_ROTATE_LEFT, "Записей:", string.format("%d", totalSessions), "{FFFFFF}",
-                    "Общее количество записей в логах")
-
-                imgui.EndChild()
-            end
-            imgui.PopStyleColor()
-
-            imgui.SameLine()
-
-            -- Правая колонка: лог по дням
-            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
-            if imgui.BeginChild("##logsLeftCol", imgui.ImVec2(0, 0), true, imgui.WindowFlags.NoScrollWithMouse) then
-                if #dates == 0 then
-                    renderEmptyLogs()
-                else
-                    imgui.Scroller("logs_main", 30, 400, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
-                    local sig = tostring(totalSessions) .. "|" .. tostring(#dates)
-                    if _logsFlatSig ~= sig then
-                        _logsFlatRows = {}
-                        local rows = _logsFlatRows
-                        for _, dateStr in ipairs(dates) do
-                            local ds = dailySums[dateStr]
-                            rows[#rows + 1] = {
-                                kind = 'header',
-                                date = dateStr,
-                                count = ds.count
-                            }
-                            local dayEntries = logsTool.getEntriesByDate(dateStr)
-                            for j = #dayEntries, 1, -1 do
-                                rows[#rows + 1] = {
-                                    kind = 'entry',
-                                    entry = dayEntries[j],
-                                    prefix = "allentry_" .. dateStr .. "_" .. j
-                                }
-                            end
-                        end
-                        _logsFlatSig = sig
-                    end
-
-                    local rows = _logsFlatRows
-                    local clipper = imgui.ImGuiListClipper()
-                    clipper:Begin(#rows)
-                    while clipper:Step() do
-                        for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
-                            local r = rows[i]
-                            if r.kind == 'header' then
-                                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.11, 0.13, 0.18, 1))
-                                imgui.BeginChild("dayhead_" .. r.date, imgui.ImVec2(0, 30), true,
-                                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                                imgui.SetCursorPos(imgui.ImVec2(8, (30 - imgui.GetTextLineHeight()) / 2))
-                                imgui.Text(fa.CALENDAR_DAYS)
-                                imgui.SameLine(0, 6)
-                                imgui.TextColoredRGB("{FFA500}" .. r.date)
-                                imgui.SameLine(0, 10)
-                                imgui.TextColoredRGB(string.format("{808080}%d зап.", r.count))
-                                imgui.EndChild()
-                                imgui.PopStyleColor()
-                            else
-                                renderLogEntry(r.entry, r.prefix, 30)
-                            end
-                        end
-                    end
-                end
-                imgui.EndChild()
-            end
-            imgui.PopStyleColor()
-        elseif _logsActiveTab == 1 then
-            imgui.Spacing()
-            if #dates == 0 then
-                renderEmptyLogs()
-            else
-                -- Левая панель: список дат
-                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
-                if imgui.BeginChild("##daysLeft", imgui.ImVec2(140, 0), true, imgui.WindowFlags.NoScrollWithMouse) then
-                    imgui.Scroller("logs_days_left", 38, 300,
-                        imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
-                    for i, dateStr in ipairs(dates) do
-                        local isSelected = (data.logsTab[0] == i - 1)
-                        local ds = dailySums[dateStr]
-
-                        imgui.PushStyleColor(imgui.Col.Header, imgui.ImVec4(0.15, 0.22, 0.35, 1))
-                        imgui.PushStyleColor(imgui.Col.HeaderHovered, imgui.ImVec4(0.18, 0.27, 0.42, 1))
-
-                        if imgui.Selectable("##sel_" .. dateStr, isSelected, 0, imgui.ImVec2(0, 30)) then
-                            data.logsTab[0] = i - 1
-                        end
-                        imgui.PopStyleColor(2)
-
-                        local cp = imgui.GetItemRectMin()
-                        local dl2 = imgui.GetWindowDrawList()
-                        if isSelected then
-                            dl2:AddRectFilled(cp, imgui.ImVec2(cp.x + 3, cp.y + 38),
-                                imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.2, 0.6, 1.0, 1.0)))
-                        end
-
-                        imgui.SetCursorScreenPos(imgui.ImVec2(cp.x + 8, cp.y + 4))
-                        imgui.TextColoredRGB((isSelected and "{FFFFFF}" or "{FFA500}") .. dateStr)
-                        imgui.SetCursorScreenPos(imgui.ImVec2(cp.x + 8, cp.y + 22))
-                        imgui.TextColoredRGB(string.format("{808080}%d BTC · %d зап.", ds.btc, ds.count))
-                    end
-                    imgui.EndChild()
-                end
-                imgui.PopStyleColor()
-
-                imgui.SameLine(0, 8)
-
-                -- Правая панель: записи выбранного дня
-                local selDate = dates[data.logsTab[0] + 1]
-                local selEntries = selDate and logsTool.getEntriesByDate(selDate) or {}
-                if selDate and #selEntries > 0 then
-                    local ds = dailySums[selDate]
-                    if imgui.BeginChild("##daysRight", imgui.ImVec2(0, 0), false) then
-                        -- Шапка дня
-                        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
-                        imgui.BeginChild("##dayHeader", imgui.ImVec2(0, 44), true,
-                            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                        imgui.SetCursorPos(imgui.ImVec2(10, 6))
-                        imgui.Text(fa.CALENDAR_DAYS)
-                        imgui.SameLine(0, 6)
-                        imgui.TextColoredRGB("{FFA500}" .. selDate)
-                        imgui.SetCursorPos(imgui.ImVec2(10, 24))
-                        imgui.TextColoredRGB(string.format(
-                            "{BEF781}%d BTC  {808080}·  {FFFFFF}%d сборов  {808080}·  {FFFFFF}%d записей",
-                            ds.btc, ds.collectCount, ds.count))
-                        imgui.EndChild()
-                        imgui.PopStyleColor()
-
-                        imgui.Spacing()
-
-                        -- Список записей
-                        if imgui.BeginChild("##dayEntries", imgui.ImVec2(0, 0), false,
-                            imgui.WindowFlags.NoScrollWithMouse) then
-                            imgui.Scroller("logs_day_entries", 34, 400,
-                                imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
-                            local nEnt = #selEntries
-                            local clipper = imgui.ImGuiListClipper()
-                            clipper:Begin(nEnt)
-                            while clipper:Step() do
-                                for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
-                                    local j = nEnt - i + 1
-                                    renderLogEntry(selEntries[j], "entry_" .. selDate .. "_" .. j, 34)
-                                end
-                            end
-                            imgui.EndChild()
-                        end
-                        imgui.EndChild()
-                    end
-                end
-            end
-        elseif _logsActiveTab == 2 then
-            imgui.Spacing()
-            -- Фильтр периода
+        -- Левая колонка: общая статистика
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
+        if imgui.BeginChild("##logsRightCol", imgui.ImVec2(colW, 0), true, imgui.WindowFlags.NoScrollWithMouse) then
             local periodLabels = {u8 "Всё время", u8 "Сегодня", u8 "Неделя", u8 "Месяц"}
             imgui.PushItemWidth(-1)
-            if imgui.BeginCombo("##improvePeriod", periodLabels[data.logsPeriodFilter + 1]) then
+            if imgui.BeginCombo("##logsPeriod", periodLabels[data.logsPeriodFilter + 1]) then
                 for pi = 1, #periodLabels do
                     local pSel = data.logsPeriodFilter == pi - 1
                     if imgui.Selectable(periodLabels[pi], pSel) then
@@ -9115,716 +9134,1107 @@ end, function(self)
             end
             imgui.PopItemWidth()
             imgui.Spacing()
+            imgui.Separator()
 
             local stats = logsTool.getStats(data.logsPeriodFilter)
-            local imStyle2 = imgui.GetStyle()
-            local hasData = (stats.improveSessions or 0) > 0 or (stats.improveAttempts or 0) > 0
 
-            if not hasData then
-                local availH = imgui.GetContentRegionAvail().y
-                local availW = imgui.GetContentRegionAvail().x
-                imgui.SetCursorPosY(imgui.GetCursorPosY() + availH / 2 - 36)
-                local iconW = imgui.CalcTextSize(fa.MICROCHIP).x
-                imgui.SetCursorPosX((availW - iconW) / 2)
-                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.25, 0.27, 0.32, 1))
-                imgui.Text(fa.MICROCHIP)
-                imgui.PopStyleColor()
-                imgui.Spacing()
-                local txt1 = u8("За этот период нет записей заточки")
-                local txt2 = u8("Статистика появится после первой заточки")
-                imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt1).x) / 2)
-                imgui.TextColoredRGB("{CCCCCC}За этот период нет записей заточки")
-                imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt2).x) / 2)
-                imgui.TextColoredRGB(
-                    "{808080}Статистика появится после первой заточки")
+            local function StatRow(icon, label, value, color, hint)
+                imgui.BeginGroup()
+                imgui.Text(icon)
+                imgui.SameLine(0, 6)
+                imgui.TextColoredRGB("{808080}" .. label)
+                imgui.SameLine(0, 4)
+                imgui.TextColoredRGB((color or "{FFFFFF}") .. value)
+                imgui.EndGroup()
+                if hint then
+                    imgui.Hint(hint)
+                end
+            end
+
+            imgui.TextColoredRGB("{87CEFA}Криптовалюта:")
+            StatRow(fa.COINS, "Получено BTC:", tostring(stats.btc), "{BEF781}",
+                "Суммарное количество BTC собранного со всех ферм")
+            StatRow(fa.COINS, "Получено ASC:", tostring(stats.asc), "{FFA500}",
+                "Суммарное количество ASC собранного со всех ферм")
+            StatRow(fa.ROTATE, "Сессий сбора:", tostring(stats.collectSessions), "{FFFFFF}",
+                "Количество запусков сбора криптовалюты")
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Видеокарты:")
+            StatRow(fa.POWER_OFF, "Включено карт:", tostring(stats.switchOn), "{BEF781}",
+                "Суммарное количество включённых видеокарт за вс время")
+            StatRow(fa.PLUG, "Выключено карт:", tostring(stats.switchOff), "{F78181}",
+                "Суммарное количество выключённых видеокарт за вс время")
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Охлаждение:")
+            StatRow(fa.DROPLET, "Карт залито:", tostring(stats.coolantCards), "{FFFFFF}",
+                "Количество видеокарт которым заливалась жидкость")
+
+            StatRow(fa.DROPLET, "Обычной:", stats.coolantBottles .. " шт.", "{87CEFA}",
+                "Количество флаконов обычной охлаждающей жидкости")
+
+            StatRow(fa.DROPLET, "Супер:", stats.coolantSuper .. " шт.", "{FFE133}",
+                "Количество флаконов супер охлаждающей жидкости")
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Обслуживание:")
+
+            StatRow(fa.DOLLAR_SIGN, "Ферм пополнено на:", "$" .. utils.formatNumber(stats.topup),
+                "{FFD700}", "Общая сумма пополнений баланса домов")
+            imgui.Spacing()
+
+            imgui.TextColoredRGB("{87CEFA}Всего:")
+            StatRow(fa.CALENDAR_DAYS, "Дней активности:", string.format("%d", #dates), "{FFFFFF}",
+                "Количество дней в которые были зафиксированы действия")
+            StatRow(fa.CLOCK_ROTATE_LEFT, "Записей:", string.format("%d", totalSessions), "{FFFFFF}",
+                "Общее количество записей в логах")
+
+            imgui.EndChild()
+        end
+        imgui.PopStyleColor()
+
+        imgui.SameLine()
+
+        -- Правая колонка: лог по дням
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
+        if imgui.BeginChild("##logsLeftCol", imgui.ImVec2(0, 0), true, imgui.WindowFlags.NoScrollWithMouse) then
+            if #dates == 0 then
+                renderEmptyLogs()
             else
-                local availTopW = imgui.GetContentRegionAvail().x
-                local W = (availTopW - imStyle2.ItemSpacing.x * 3) / 4
+                imgui.Scroller("logs_main", 30, 400, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+                local sig = tostring(totalSessions) .. "|" .. tostring(#dates)
+                if _logsFlatSig ~= sig then
+                    _logsFlatRows = {}
+                    local rows = _logsFlatRows
+                    for _, dateStr in ipairs(dates) do
+                        local ds = dailySums[dateStr]
+                        rows[#rows + 1] = {
+                            kind = 'header',
+                            date = dateStr,
+                            count = ds.count
+                        }
+                        local dayEntries = logsTool.getEntriesByDate(dateStr)
+                        for j = #dayEntries, 1, -1 do
+                            rows[#rows + 1] = {
+                                kind = 'entry',
+                                entry = dayEntries[j],
+                                prefix = "allentry_" .. dateStr .. "_" .. j
+                            }
+                        end
+                    end
+                    _logsFlatSig = sig
+                end
 
-                local function Title(id, icon, label, value, valColor, hint)
-                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.11, 0.13, 0.18, 1))
-                    imgui.BeginChild("##tit_" .. id, imgui.ImVec2(W, 55), true,
+                local rows = _logsFlatRows
+                local clipper = imgui.ImGuiListClipper()
+                clipper:Begin(#rows)
+                while clipper:Step() do
+                    for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                        local r = rows[i]
+                        if r.kind == 'header' then
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.11, 0.13, 0.18, 1))
+                            imgui.BeginChild("dayhead_" .. r.date, imgui.ImVec2(0, 30), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                            imgui.SetCursorPos(imgui.ImVec2(8, (30 - imgui.GetTextLineHeight()) / 2))
+                            imgui.Text(fa.CALENDAR_DAYS)
+                            imgui.SameLine(0, 6)
+                            imgui.TextColoredRGB("{FFA500}" .. r.date)
+                            imgui.SameLine(0, 10)
+                            imgui.TextColoredRGB(string.format("{808080}%d зап.", r.count))
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
+                        else
+                            renderLogEntry(r.entry, r.prefix, 30)
+                        end
+                    end
+                end
+            end
+            imgui.EndChild()
+        end
+        imgui.PopStyleColor()
+    elseif _logsActiveTab == 1 then
+        imgui.Spacing()
+        if #dates == 0 then
+            renderEmptyLogs()
+        else
+            -- Левая панель: список дат
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
+            if imgui.BeginChild("##daysLeft", imgui.ImVec2(140, 0), true, imgui.WindowFlags.NoScrollWithMouse) then
+                imgui.Scroller("logs_days_left", 38, 300, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+                for i, dateStr in ipairs(dates) do
+                    local isSelected = (data.logsTab[0] == i - 1)
+                    local ds = dailySums[dateStr]
+
+                    imgui.PushStyleColor(imgui.Col.Header, imgui.ImVec4(0.15, 0.22, 0.35, 1))
+                    imgui.PushStyleColor(imgui.Col.HeaderHovered, imgui.ImVec4(0.18, 0.27, 0.42, 1))
+
+                    if imgui.Selectable("##sel_" .. dateStr, isSelected, 0, imgui.ImVec2(0, 30)) then
+                        data.logsTab[0] = i - 1
+                    end
+                    imgui.PopStyleColor(2)
+
+                    local cp = imgui.GetItemRectMin()
+                    local dl2 = imgui.GetWindowDrawList()
+                    if isSelected then
+                        dl2:AddRectFilled(cp, imgui.ImVec2(cp.x + 3, cp.y + 38),
+                            imgui.ColorConvertFloat4ToU32(imgui.ImVec4(0.2, 0.6, 1.0, 1.0)))
+                    end
+
+                    imgui.SetCursorScreenPos(imgui.ImVec2(cp.x + 8, cp.y + 4))
+                    imgui.TextColoredRGB((isSelected and "{FFFFFF}" or "{FFA500}") .. dateStr)
+                    imgui.SetCursorScreenPos(imgui.ImVec2(cp.x + 8, cp.y + 22))
+                    imgui.TextColoredRGB(string.format("{808080}%d BTC · %d зап.", ds.btc, ds.count))
+                end
+                imgui.EndChild()
+            end
+            imgui.PopStyleColor()
+
+            imgui.SameLine(0, 8)
+
+            -- Правая панель: записи выбранного дня
+            local selDate = dates[data.logsTab[0] + 1]
+            local selEntries = selDate and logsTool.getEntriesByDate(selDate) or {}
+            if selDate and #selEntries > 0 then
+                local ds = dailySums[selDate]
+                if imgui.BeginChild("##daysRight", imgui.ImVec2(0, 0), false) then
+                    -- Шапка дня
+                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
+                    imgui.BeginChild("##dayHeader", imgui.ImVec2(0, 44), true,
                         imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                    local cW = imgui.GetWindowWidth()
-                    local iconW = imgui.CalcTextSize(icon).x
-                    local lblW = imgui.CalcTextSize(u8(label)).x
-                    local rowW = iconW + 6 + lblW
-                    imgui.SetCursorPos(imgui.ImVec2((cW - rowW) / 2, 8))
-                    imgui.Text(icon)
+                    imgui.SetCursorPos(imgui.ImVec2(10, 6))
+                    imgui.Text(fa.CALENDAR_DAYS)
                     imgui.SameLine(0, 6)
-                    imgui.TextColoredRGB("{808080}" .. label)
-                    local valTxt = u8(value)
-                    local valSize = imgui.CalcTextSize(valTxt)
-                    imgui.SetCursorPos(imgui.ImVec2((cW - valSize.x) / 2, 36))
-                    imgui.TextColoredRGB((valColor or "{FFFFFF}") .. value)
+                    imgui.TextColoredRGB("{FFA500}" .. selDate)
+                    imgui.SetCursorPos(imgui.ImVec2(10, 24))
+                    imgui.TextColoredRGB(string.format(
+                        "{BEF781}%d BTC  {808080}·  {FFFFFF}%d сборов  {808080}·  {FFFFFF}%d записей",
+                        ds.btc, ds.collectCount, ds.count))
                     imgui.EndChild()
                     imgui.PopStyleColor()
-                    if hint then
-                        imgui.Hint(hint)
-                    end
-                end
 
-                local function buildLevelBreakdown(unitFn)
-                    local lines = {}
-                    local hasData = false
-                    for lvl = 1, 9 do
-                        local atk = (stats.improveAttemptsByLevel or {})[lvl] or 0
-                        local suc = (stats.improveByLevel or {})[lvl + 1] or 0
-                        if atk > 0 then
-                            hasData = true
-                            if suc > 0 then
-                                local avg = atk / suc
-                                table.insert(lines, string.format("С %d на %d: ~%s (за ~%d попыток)", lvl,
-                                    lvl + 1, unitFn(avg, lvl), math.floor(avg + 0.5)))
-                            else
-                                table.insert(lines, string.format(
-                                    "С %d на %d: %d попыток, успехов нет", lvl, lvl + 1, atk))
-                            end
-                        end
-                    end
-                    if not hasData then
-                        return "Накопится после первых попыток"
-                    end
-                    return table.concat(lines, "\n")
-                end
-
-                local stoAtk = stats.improveStorageAttempts or 0
-                local stoSuc = stats.improveStorageSuccess or 0
-                local stoFail = stats.improveStorageFail or 0
-                local perfAtk = (stats.improveAttempts or 0) - stoAtk
-                local perfSuc = (stats.improveSuccess or 0) - stoSuc
-                local perfFail = (stats.improveFail or 0) - stoFail
-                local perfPct = perfAtk > 0 and perfSuc / perfAtk * 100 or 0
-                local stoPct = stoAtk > 0 and stoSuc / stoAtk * 100 or 0
-
-                local succHint = "Процент успешных попыток заточки видеокарт"
-                if stoAtk > 0 then
-                    succHint = succHint ..
-                                   string.format("\n\nУлучшение хранилища: %.1f%% (%d из %d)",
-                            stoPct, stoSuc, stoAtk)
-                end
-
-                Title("spent", fa.DOLLAR_SIGN, "Потрачено", "$" .. utils.formatNumber(stats.improveSpent or 0),
-                    "{FFD700}",
-                    "Суммарная стоимость попыток заточки за выбранный период")
-                imgui.SameLine()
-                Title("oils", fa.DROPLET, "Смазок", tostring(stats.improveOils or 0) .. " шт.", "{87CEFA}",
-                    "Сколько штук смазки было потрачено")
-                imgui.SameLine()
-                Title("succ", fa.PERCENT, "Успеха", perfAtk > 0 and string.format("%.1f%%", perfPct) or "—",
-                    "{BEF781}", succHint)
-                imgui.SameLine()
-                Title("sess", fa.ROTATE, "Заточки", tostring(stats.improveSessions or 0), "{FFFFFF}",
-                    "Количество запущенных заточек")
-                imgui.Spacing()
-
-                local function CenterRow(items)
-                    local totalW = 0
-                    for i, it in ipairs(items) do
-                        local w = 0
-                        if it.icon then
-                            w = w + imgui.CalcTextSize(it.icon).x + 6
-                        end
-                        w = w + imgui.CalcTextSize(u8(it.label or '')).x
-                        if it.value then
-                            w = w + 4 + imgui.CalcTextSize(u8(it.value or '')).x
-                        end
-                        totalW = totalW + w
-                        if i < #items then
-                            totalW = totalW + 28
-                        end
-                    end
-                    local availW = imgui.GetContentRegionAvail().x
-                    imgui.SetCursorPosX(math.max(0, (availW - totalW) / 2))
-                    for i, it in ipairs(items) do
-                        if i > 1 then
-                            imgui.SameLine(0, 28)
-                        end
-                        imgui.BeginGroup()
-                        if it.icon then
-                            imgui.Text(it.icon)
-                            imgui.SameLine(0, 6)
-                        end
-                        imgui.TextColoredRGB("{B0B0B0}" .. (it.label or ''))
-                        if it.value then
-                            imgui.SameLine(0, 4)
-                            imgui.TextColoredRGB((it.valueColor or "{FFFFFF}") .. (it.value or ''))
-                        end
-                        imgui.EndGroup()
-                        if it.hint then
-                            imgui.Hint(it.hint)
-                        end
-                    end
-                end
-
-                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
-                imgui.BeginChild("##improveAttempts", imgui.ImVec2(0, 70), true,
-                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                do
-                    local title = u8("Попытки")
-                    imgui.SetCursorPosX((imgui.GetContentRegionAvail().x - imgui.CalcTextSize(title).x) / 2)
-                    imgui.TextColoredRGB("{87CEFA}Попытки")
-                end
-                imgui.Spacing()
-                CenterRow({{
-                    icon = fa.CHECK,
-                    label = "Успешных:",
-                    value = tostring(stats.improveSuccess or 0),
-                    valueColor = "{BEF781}",
-                    hint = "Сколько попыток закончились повышением уровня карты"
-                }, {
-                    icon = fa.XMARK,
-                    label = "Провальных:",
-                    value = tostring(stats.improveFail or 0),
-                    valueColor = "{F78181}",
-                    hint = "Сколько попыток закончились неудачей (карта не поднялась в уровне)"
-                }, {
-                    icon = fa.LAYER_GROUP,
-                    label = "Всего:",
-                    value = tostring(stats.improveAttempts or 0),
-                    valueColor = "{FFFFFF}",
-                    hint = "Общее количество попыток за выбранный период (успешных + провальных)"
-                }})
-                imgui.EndChild()
-                imgui.PopStyleColor()
-                imgui.Spacing()
-
-                local attempts = perfAtk
-                local success = perfSuc
-                local spent = stats.improveSpent or 0
-                local oils = stats.improveOils or 0
-
-                local avgPerAttempt = attempts > 0 and (spent / attempts) or 0
-                local avgPerSuccess = success > 0 and (spent / success) or 0
-                local avgOilsAttempt = attempts > 0 and (oils / attempts) or 0
-                local avgOilsSuccess = success > 0 and (oils / success) or 0
-
-                local availW2 = imgui.GetContentRegionAvail().x
-                local colW2 = (availW2 - imStyle2.ItemSpacing.x) / 2
-
-                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
-                imgui.BeginChild("##improveDerivedL", imgui.ImVec2(colW2, 96), true,
-                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                do
-                    local title = u8("Среднее по деньгам")
-                    imgui.SetCursorPosX((imgui.GetContentRegionAvail().x - imgui.CalcTextSize(title).x) / 2)
-                    imgui.TextColoredRGB("{87CEFA}Среднее по деньгам")
-                end
-                imgui.Spacing()
-                CenterRow({{
-                    icon = fa.DOLLAR_SIGN,
-                    label = "на попытку:",
-                    value = attempts > 0 and ("$" .. utils.formatNumber(math.floor(avgPerAttempt))) or "—",
-                    valueColor = "{FFD700}",
-                    hint = "Сколько денег в среднем уходит на одну попытку заточки"
-                }})
-                CenterRow({{
-                    icon = fa.CHECK,
-                    label = "на одно успешное:",
-                    value = success > 0 and ("$" .. utils.formatNumber(math.floor(avgPerSuccess))) or "—",
-                    valueColor = "{BEF781}",
-                    hint = "Сколько денег уходит на одну успешную заточку.\n\n" ..
-                        buildLevelBreakdown(function(avg, lvl)
-                            return "$" .. utils.formatNumber(math.floor(avg * (gpuImprovePriceByLevel[lvl] or 0)))
-                        end)
-                }})
-                imgui.EndChild()
-                imgui.PopStyleColor()
-
-                imgui.SameLine()
-
-                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
-                imgui.BeginChild("##improveDerivedR", imgui.ImVec2(0, 96), true,
-                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                do
-                    local title = u8("Смазка")
-                    imgui.SetCursorPosX((imgui.GetContentRegionAvail().x - imgui.CalcTextSize(title).x) / 2)
-                    imgui.TextColoredRGB("{87CEFA}Смазка")
-                end
-                imgui.Spacing()
-                CenterRow({{
-                    icon = fa.DROPLET,
-                    label = "на попытку:",
-                    value = attempts > 0 and string.format("%.2f шт.", avgOilsAttempt) or "—",
-                    valueColor = "{87CEFA}",
-                    hint = "Сколько штук смазки в среднем уходит на одну попытку заточки"
-                }})
-                CenterRow({{
-                    icon = fa.CHECK,
-                    label = "на одно успешное:",
-                    value = success > 0 and string.format("%.2f шт.", avgOilsSuccess) or "—",
-                    valueColor = "{87CEFA}",
-                    hint = "Сколько штук смазки уходит на одну успешную заточку.\n\n" ..
-                        buildLevelBreakdown(function(avg, lvl)
-                            return string.format("%d шт.", math.floor(avg * 2 + 0.5))
-                        end)
-                }})
-                imgui.EndChild()
-                imgui.PopStyleColor()
-                imgui.Spacing()
-
-                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
-                imgui.BeginChild("##improveCards", imgui.ImVec2(0, 0), true, imgui.WindowFlags.NoScrollWithMouse)
-                imgui.Scroller("improve_cards", 28, 240, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
-
-                imgui.TextColoredRGB("{87CEFA}Список карт")
-                if imgui.IsItemHovered() then
-                    imgui.SetTooltip(u8(
-                        "Сводка по каждой заточенной карте за выбранный период"))
-                end
-                imgui.Spacing()
-
-                local cardsList = stats.improveCards
-                if type(cardsList) == 'table' and #cardsList > 0 then
-                    local function renderCardRow(c, rowId)
-                        local sLvl = c.startLevel or 0
-                        local eLvl = c.endLevel or sLvl
-                        local atk = c.attempts or 0
-                        local sp = c.spent or 0
-                        local oi = c.oils or 0
-                        local suc = c.success or 0
-                        local isSto = c.isStorage == true
-                        local progressed = eLvl > sLvl
-
-                        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.12, 0.16, 1))
-                        imgui.BeginChild("##cardrow_" .. rowId, imgui.ImVec2(0, 28), true,
-                            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-
-                        if isSto then
-                            local sLeft = string.format("{B0B0B0}#%d   {808080}ур.  {BEF781}%d   {C788FF}[ХР+]",
-                                c.slot or 0, sLvl)
-                            local sRight = string.format("{FFFFFF}%d поп.    {BEF781}%d усп.", atk, suc)
-                            local sLeftClean = sLeft:gsub("{%x%x%x%x%x%x}", "")
-                            local sRightClean = sRight:gsub("{%x%x%x%x%x%x}", "")
-                            local totalW = imgui.CalcTextSize(fa.LAYER_GROUP).x + 6 +
-                                               imgui.CalcTextSize(u8(sLeftClean)).x + 12 +
-                                               imgui.CalcTextSize(u8(sRightClean)).x
-                            local startX = math.max(8, (imgui.GetContentRegionAvail().x - totalW) / 2)
-
-                            imgui.SetCursorPos(imgui.ImVec2(startX, (28 - imgui.GetTextLineHeight()) / 2))
-                            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.78, 0.53, 1.0, 1))
-                            imgui.Text(fa.LAYER_GROUP)
-                            imgui.PopStyleColor()
-                            imgui.SameLine(0, 6)
-                            imgui.TextColoredRGB(sLeft)
-                            imgui.SameLine(0, 12)
-                            imgui.TextColoredRGB(sRight)
-                        else
-                            local arrowColor = progressed and "{BEF781}" or "{808080}"
-                            local arrowVec = progressed and imgui.ImVec4(0.745, 0.945, 0.506, 1) or
-                                                 imgui.ImVec4(0.502, 0.502, 0.502, 1)
-                            local sLeft = string.format("{B0B0B0}#%d   {808080}ур.  %s%d", c.slot or 0, arrowColor,
-                                sLvl)
-                            local sRight = string.format(
-                                "%s%d    {FFFFFF}%d поп.    {BEF781}%d усп.    {FFD700}$%s    {87CEFA}%d см.",
-                                arrowColor, eLvl, atk, suc, utils.formatNumber(sp), oi)
-                            local sLeftClean = sLeft:gsub("{%x%x%x%x%x%x}", "")
-                            local sRightClean = sRight:gsub("{%x%x%x%x%x%x}", "")
-                            local totalW =
-                                imgui.CalcTextSize(fa.MICROCHIP).x + 6 + imgui.CalcTextSize(u8(sLeftClean)).x + 6 +
-                                    imgui.CalcTextSize(fa.ARROW_RIGHT).x + 6 + imgui.CalcTextSize(u8(sRightClean)).x
-                            local startX = math.max(8, (imgui.GetContentRegionAvail().x - totalW) / 2)
-
-                            imgui.SetCursorPos(imgui.ImVec2(startX, (28 - imgui.GetTextLineHeight()) / 2))
-                            imgui.Text(fa.MICROCHIP)
-                            imgui.SameLine(0, 6)
-                            imgui.TextColoredRGB(sLeft)
-                            imgui.SameLine(0, 6)
-                            imgui.PushStyleColor(imgui.Col.Text, arrowVec)
-                            imgui.Text(fa.ARROW_RIGHT)
-                            imgui.PopStyleColor()
-                            imgui.SameLine(0, 6)
-                            imgui.TextColoredRGB(sRight)
-                        end
-
-                        imgui.EndChild()
-                        imgui.PopStyleColor()
-
-                        if isSto then
-                            imgui.Hint(string.format(
-                                "Карта #%d (улучшение хранилища)\nУровень карты: %d (не меняется)\nПопыток: %d (успешных: %d)",
-                                c.slot or 0, sLvl, atk, suc))
-                        else
-                            imgui.Hint(string.format(
-                                "Карта #%d\nУровень: с %d до %d (Повышение на %d)\nПопыток: %d (успешных: %d)\nПотрачено: $%s\nСмазок: %d шт.",
-                                c.slot or 0, sLvl, eLvl, eLvl - sLvl, atk, suc, utils.formatNumber(sp), oi))
-                        end
-                    end
-
-                    local improveSig = tostring(#cardsList) .. "|" .. tostring(stats.improveSessions or 0) .. "|" ..
-                                           tostring(data.logsPeriodFilter)
-                    if _improveFlatSig ~= improveSig then
-                        local sessions = {}
-                        for _, c in ipairs(cardsList) do
-                            local key = c.sessionId or ((c.date or '') .. '|' .. (c.time or ''))
-                            if not sessions[key] then
-                                sessions[key] = {
-                                    key = key,
-                                    date = c.date or '',
-                                    time = c.time or '',
-                                    startedAt = c.startedAt,
-                                    cards = {}
-                                }
-                            end
-                            table.insert(sessions[key].cards, c)
-                        end
-                        local sessKeys = {}
-                        for k, _ in pairs(sessions) do
-                            table.insert(sessKeys, k)
-                        end
-                        table.sort(sessKeys, function(a, b)
-                            local sa, sb = sessions[a], sessions[b]
-                            if sa.date ~= sb.date then
-                                local function dkey(s)
-                                    local d, m, y = s:match("(%d+)%.(%d+)%.(%d+)")
-                                    return tonumber(string.format("%04d%02d%02d", tonumber(y) or 0, tonumber(m) or 0,
-                                        tonumber(d) or 0)) or 0
-                                end
-                                return dkey(sa.date) > dkey(sb.date)
-                            end
-                            local sat, sbt = sa.startedAt or 0, sb.startedAt or 0
-                            if sat > 0 and sbt > 0 then
-                                return sat > sbt
-                            end
-                            return (sa.time or '') > (sb.time or '')
-                        end)
-
-                        local showDateInHeader = data.logsPeriodFilter ~= 1
-                        _improveFlatRows = {}
-                        local rows = _improveFlatRows
-                        local rowIdx = 0
-                        for _, sk in ipairs(sessKeys) do
-                            local sess = sessions[sk]
-
-                            local sumSpent, sumOils = 0, 0
-                            local hasPerf, hasSto = false, false
-                            for _, c in ipairs(sess.cards) do
-                                sumSpent = sumSpent + (c.spent or 0)
-                                sumOils = sumOils + (c.oils or 0)
-                                if c.isStorage then
-                                    hasSto = true
-                                else
-                                    hasPerf = true
-                                end
-                            end
-
-                            local startStr = sess.startedAt and os.date('%H:%M', sess.startedAt) or sess.time
-
-                            local left
-                            if showDateInHeader and sess.date ~= '' then
-                                left = "{FFA500}" .. sess.date
-                            else
-                                left = "{FFA500}" ..
-                                           ((hasSto and not hasPerf) and "Хранилище" or "Заточка")
-                            end
-                            local statsStr
-                            if hasSto and not hasPerf then
-                                statsStr = string.format("{808080}%d карт  ·  {C788FF}хранилище",
-                                    #sess.cards)
-                            elseif hasSto and hasPerf then
-                                statsStr = string.format(
-                                    "{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.  ·  {C788FF}+хранилище",
-                                    #sess.cards, utils.formatNumber(sumSpent), sumOils)
-                            else
-                                statsStr = string.format("{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.",
-                                    #sess.cards, utils.formatNumber(sumSpent), sumOils)
-                            end
-
-                            rows[#rows + 1] = {
-                                kind = 'header',
-                                key = sk,
-                                left = left,
-                                time = "{B0B0B0}" .. startStr,
-                                stats = statsStr
-                            }
-
-                            table.sort(sess.cards, function(a, b)
-                                local ea = a.endLevel or 0
-                                local eb = b.endLevel or 0
-                                if ea ~= eb then
-                                    return ea > eb
-                                end
-                                local ga = ea - (a.startLevel or 0)
-                                local gb = eb - (b.startLevel or 0)
-                                if ga ~= gb then
-                                    return ga > gb
-                                end
-                                return (a.spent or 0) > (b.spent or 0)
-                            end)
-                            for _, c in ipairs(sess.cards) do
-                                rowIdx = rowIdx + 1
-                                rows[#rows + 1] = {
-                                    kind = 'card',
-                                    card = c,
-                                    id = rowIdx
-                                }
-                            end
-                        end
-                        _improveFlatSig = improveSig
-                    end
-
-                    local rows = _improveFlatRows
-                    local clipper = imgui.ImGuiListClipper()
-                    clipper:Begin(#rows)
-                    while clipper:Step() do
-                        for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
-                            local r = rows[i]
-                            if r.kind == 'header' then
-                                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
-                                imgui.BeginChild("##isess_" .. r.key, imgui.ImVec2(0, 28), true,
-                                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-                                imgui.SetCursorPos(imgui.ImVec2(8, (28 - imgui.GetTextLineHeight()) / 2))
-                                imgui.Text(fa.CLOCK)
-                                imgui.SameLine(0, 6)
-                                imgui.TextColoredRGB(r.left)
-                                imgui.SameLine(0, 6)
-                                imgui.TextColoredRGB(r.time)
-                                imgui.SameLine(0, 12)
-                                imgui.TextColoredRGB(r.stats)
-                                imgui.EndChild()
-                                imgui.PopStyleColor()
-                            else
-                                renderCardRow(r.card, r.id)
-                            end
-                        end
-                    end
-                else
-                    local availH = imgui.GetContentRegionAvail().y
-                    local availW = imgui.GetContentRegionAvail().x
-                    imgui.SetCursorPosY(imgui.GetCursorPosY() + math.max(0, availH / 2 - 40))
-                    local iconW = imgui.CalcTextSize(fa.BOX_OPEN).x
-                    imgui.SetCursorPosX((availW - iconW) / 2)
-                    imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.25, 0.27, 0.32, 1))
-                    imgui.Text(fa.BOX_OPEN)
-                    imgui.PopStyleColor()
                     imgui.Spacing()
-                    local txt1 = u8("Нет данных по картам")
-                    local txt2 = u8("Запусти заточку — карты появятся здесь")
-                    imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt1).x) / 2)
-                    imgui.TextColoredRGB("{CCCCCC}Нет данных по картам")
-                    imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt2).x) / 2)
-                    imgui.TextColoredRGB(
-                        "{808080}Запусти заточкиу— карты появятся здесь")
+
+                    -- Список записей
+                    if imgui.BeginChild("##dayEntries", imgui.ImVec2(0, 0), false, imgui.WindowFlags.NoScrollWithMouse) then
+                        imgui.Scroller("logs_day_entries", 34, 400,
+                            imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+                        local nEnt = #selEntries
+                        local clipper = imgui.ImGuiListClipper()
+                        clipper:Begin(nEnt)
+                        while clipper:Step() do
+                            for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                                local j = nEnt - i + 1
+                                renderLogEntry(selEntries[j], "entry_" .. selDate .. "_" .. j, 34)
+                            end
+                        end
+                        imgui.EndChild()
+                    end
+                    imgui.EndChild()
                 end
-                imgui.EndChild()
-                imgui.PopStyleColor()
             end
         end
-        if data.logsResetConfirm then
-            local isImprove = data.logsResetMode == "improve"
-            renderResetConfirm("logsResetConfirm", data.logsResetTimer, isImprove and
-                "Удалить логи заточки?" or "Удалить все логи действий?",
-                "Это действие необратимо.", function()
-                    if isImprove then
-                        logsTool.clearImprove()
-                        utils.addChat("{F78181}Логи заточки очищены.")
-                    else
-                        logsTool.clear()
-                        utils.addChat("{F78181}Логи очищены.")
-                    end
-                    data.logsResetConfirm = false
-                end, function()
-                    data.logsResetConfirm = false
-                end)
+    elseif _logsActiveTab == 2 then
+        imgui.Spacing()
+        -- Фильтр периода
+        local periodLabels = {u8 "Всё время", u8 "Сегодня", u8 "Неделя", u8 "Месяц"}
+        imgui.PushItemWidth(-1)
+        if imgui.BeginCombo("##improvePeriod", periodLabels[data.logsPeriodFilter + 1]) then
+            for pi = 1, #periodLabels do
+                local pSel = data.logsPeriodFilter == pi - 1
+                if imgui.Selectable(periodLabels[pi], pSel) then
+                    data.logsPeriodFilter = pi - 1
+                end
+            end
+            imgui.EndCombo()
         end
-        imgui.End()
+        imgui.PopItemWidth()
+        imgui.Spacing()
+
+        local stats = logsTool.getStats(data.logsPeriodFilter)
+        local imStyle2 = imgui.GetStyle()
+        local hasData = (stats.improveSessions or 0) > 0 or (stats.improveAttempts or 0) > 0
+
+        if not hasData then
+            local availH = imgui.GetContentRegionAvail().y
+            local availW = imgui.GetContentRegionAvail().x
+            imgui.SetCursorPosY(imgui.GetCursorPosY() + availH / 2 - 36)
+            local iconW = imgui.CalcTextSize(fa.MICROCHIP).x
+            imgui.SetCursorPosX((availW - iconW) / 2)
+            imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.25, 0.27, 0.32, 1))
+            imgui.Text(fa.MICROCHIP)
+            imgui.PopStyleColor()
+            imgui.Spacing()
+            local txt1 = u8("За этот период нет записей заточки")
+            local txt2 = u8("Статистика появится после первой заточки")
+            imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt1).x) / 2)
+            imgui.TextColoredRGB("{CCCCCC}За этот период нет записей заточки")
+            imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt2).x) / 2)
+            imgui.TextColoredRGB("{808080}Статистика появится после первой заточки")
+        else
+            local availTopW = imgui.GetContentRegionAvail().x
+            local W = (availTopW - imStyle2.ItemSpacing.x * 3) / 4
+
+            local function Title(id, icon, label, value, valColor, hint)
+                imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.11, 0.13, 0.18, 1))
+                imgui.BeginChild("##tit_" .. id, imgui.ImVec2(W, 55), true,
+                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                local cW = imgui.GetWindowWidth()
+                local iconW = imgui.CalcTextSize(icon).x
+                local lblW = imgui.CalcTextSize(u8(label)).x
+                local rowW = iconW + 6 + lblW
+                imgui.SetCursorPos(imgui.ImVec2((cW - rowW) / 2, 8))
+                imgui.Text(icon)
+                imgui.SameLine(0, 6)
+                imgui.TextColoredRGB("{808080}" .. label)
+                local valTxt = u8(value)
+                local valSize = imgui.CalcTextSize(valTxt)
+                imgui.SetCursorPos(imgui.ImVec2((cW - valSize.x) / 2, 36))
+                imgui.TextColoredRGB((valColor or "{FFFFFF}") .. value)
+                imgui.EndChild()
+                imgui.PopStyleColor()
+                if hint then
+                    imgui.Hint(hint)
+                end
+            end
+
+            local function buildLevelBreakdown(unitFn)
+                local lines = {}
+                local hasData = false
+                for lvl = 1, 9 do
+                    local atk = (stats.improveAttemptsByLevel or {})[lvl] or 0
+                    local suc = (stats.improveByLevel or {})[lvl + 1] or 0
+                    if atk > 0 then
+                        hasData = true
+                        if suc > 0 then
+                            local avg = atk / suc
+                            table.insert(lines, string.format("С %d на %d: ~%s (за ~%d попыток)", lvl,
+                                lvl + 1, unitFn(avg, lvl), math.floor(avg + 0.5)))
+                        else
+                            table.insert(lines, string.format("С %d на %d: %d попыток, успехов нет",
+                                lvl, lvl + 1, atk))
+                        end
+                    end
+                end
+                if not hasData then
+                    return "Накопится после первых попыток"
+                end
+                return table.concat(lines, "\n")
+            end
+
+            local stoAtk = stats.improveStorageAttempts or 0
+            local stoSuc = stats.improveStorageSuccess or 0
+            local stoFail = stats.improveStorageFail or 0
+            local perfAtk = (stats.improveAttempts or 0) - stoAtk
+            local perfSuc = (stats.improveSuccess or 0) - stoSuc
+            local perfFail = (stats.improveFail or 0) - stoFail
+            local perfPct = perfAtk > 0 and perfSuc / perfAtk * 100 or 0
+            local stoPct = stoAtk > 0 and stoSuc / stoAtk * 100 or 0
+
+            local succHint = "Процент успешных попыток заточки видеокарт"
+            if stoAtk > 0 then
+                succHint = succHint ..
+                               string.format("\n\nУлучшение хранилища: %.1f%% (%d из %d)", stoPct,
+                        stoSuc, stoAtk)
+            end
+
+            Title("spent", fa.DOLLAR_SIGN, "Потрачено", "$" .. utils.formatNumber(stats.improveSpent or 0),
+                "{FFD700}",
+                "Суммарная стоимость попыток заточки за выбранный период")
+            imgui.SameLine()
+            Title("oils", fa.DROPLET, "Смазок", tostring(stats.improveOils or 0) .. " шт.", "{87CEFA}",
+                "Сколько штук смазки было потрачено")
+            imgui.SameLine()
+            Title("succ", fa.PERCENT, "Успеха", perfAtk > 0 and string.format("%.1f%%", perfPct) or "—",
+                "{BEF781}", succHint)
+            imgui.SameLine()
+            Title("sess", fa.ROTATE, "Заточки", tostring(stats.improveSessions or 0), "{FFFFFF}",
+                "Количество запущенных заточек")
+            imgui.Spacing()
+
+            local function CenterRow(items)
+                local totalW = 0
+                for i, it in ipairs(items) do
+                    local w = 0
+                    if it.icon then
+                        w = w + imgui.CalcTextSize(it.icon).x + 6
+                    end
+                    w = w + imgui.CalcTextSize(u8(it.label or '')).x
+                    if it.value then
+                        w = w + 4 + imgui.CalcTextSize(u8(it.value or '')).x
+                    end
+                    totalW = totalW + w
+                    if i < #items then
+                        totalW = totalW + 28
+                    end
+                end
+                local availW = imgui.GetContentRegionAvail().x
+                imgui.SetCursorPosX(math.max(0, (availW - totalW) / 2))
+                for i, it in ipairs(items) do
+                    if i > 1 then
+                        imgui.SameLine(0, 28)
+                    end
+                    imgui.BeginGroup()
+                    if it.icon then
+                        imgui.Text(it.icon)
+                        imgui.SameLine(0, 6)
+                    end
+                    imgui.TextColoredRGB("{B0B0B0}" .. (it.label or ''))
+                    if it.value then
+                        imgui.SameLine(0, 4)
+                        imgui.TextColoredRGB((it.valueColor or "{FFFFFF}") .. (it.value or ''))
+                    end
+                    imgui.EndGroup()
+                    if it.hint then
+                        imgui.Hint(it.hint)
+                    end
+                end
+            end
+
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
+            imgui.BeginChild("##improveAttempts", imgui.ImVec2(0, 70), true,
+                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+            do
+                local title = u8("Попытки")
+                imgui.SetCursorPosX((imgui.GetContentRegionAvail().x - imgui.CalcTextSize(title).x) / 2)
+                imgui.TextColoredRGB("{87CEFA}Попытки")
+            end
+            imgui.Spacing()
+            CenterRow({{
+                icon = fa.CHECK,
+                label = "Успешных:",
+                value = tostring(stats.improveSuccess or 0),
+                valueColor = "{BEF781}",
+                hint = "Сколько попыток закончились повышением уровня карты"
+            }, {
+                icon = fa.XMARK,
+                label = "Провальных:",
+                value = tostring(stats.improveFail or 0),
+                valueColor = "{F78181}",
+                hint = "Сколько попыток закончились неудачей (карта не поднялась в уровне)"
+            }, {
+                icon = fa.LAYER_GROUP,
+                label = "Всего:",
+                value = tostring(stats.improveAttempts or 0),
+                valueColor = "{FFFFFF}",
+                hint = "Общее количество попыток за выбранный период (успешных + провальных)"
+            }})
+            imgui.EndChild()
+            imgui.PopStyleColor()
+            imgui.Spacing()
+
+            local attempts = perfAtk
+            local success = perfSuc
+            local spent = stats.improveSpent or 0
+            local oils = stats.improveOils or 0
+
+            local avgPerAttempt = attempts > 0 and (spent / attempts) or 0
+            local avgPerSuccess = success > 0 and (spent / success) or 0
+            local avgOilsAttempt = attempts > 0 and (oils / attempts) or 0
+            local avgOilsSuccess = success > 0 and (oils / success) or 0
+
+            local availW2 = imgui.GetContentRegionAvail().x
+            local colW2 = (availW2 - imStyle2.ItemSpacing.x) / 2
+
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
+            imgui.BeginChild("##improveDerivedL", imgui.ImVec2(colW2, 96), true,
+                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+            do
+                local title = u8("Среднее по деньгам")
+                imgui.SetCursorPosX((imgui.GetContentRegionAvail().x - imgui.CalcTextSize(title).x) / 2)
+                imgui.TextColoredRGB("{87CEFA}Среднее по деньгам")
+            end
+            imgui.Spacing()
+            CenterRow({{
+                icon = fa.DOLLAR_SIGN,
+                label = "на попытку:",
+                value = attempts > 0 and ("$" .. utils.formatNumber(math.floor(avgPerAttempt))) or "—",
+                valueColor = "{FFD700}",
+                hint = "Сколько денег в среднем уходит на одну попытку заточки"
+            }})
+            CenterRow({{
+                icon = fa.CHECK,
+                label = "на одно успешное:",
+                value = success > 0 and ("$" .. utils.formatNumber(math.floor(avgPerSuccess))) or "—",
+                valueColor = "{BEF781}",
+                hint = "Сколько денег уходит на одну успешную заточку.\n\n" ..
+                    buildLevelBreakdown(function(avg, lvl)
+                        return "$" .. utils.formatNumber(math.floor(avg * (gpuImprovePriceByLevel[lvl] or 0)))
+                    end)
+            }})
+            imgui.EndChild()
+            imgui.PopStyleColor()
+
+            imgui.SameLine()
+
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
+            imgui.BeginChild("##improveDerivedR", imgui.ImVec2(0, 96), true,
+                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+            do
+                local title = u8("Смазка")
+                imgui.SetCursorPosX((imgui.GetContentRegionAvail().x - imgui.CalcTextSize(title).x) / 2)
+                imgui.TextColoredRGB("{87CEFA}Смазка")
+            end
+            imgui.Spacing()
+            CenterRow({{
+                icon = fa.DROPLET,
+                label = "на попытку:",
+                value = attempts > 0 and string.format("%.2f шт.", avgOilsAttempt) or "—",
+                valueColor = "{87CEFA}",
+                hint = "Сколько штук смазки в среднем уходит на одну попытку заточки"
+            }})
+            CenterRow({{
+                icon = fa.CHECK,
+                label = "на одно успешное:",
+                value = success > 0 and string.format("%.2f шт.", avgOilsSuccess) or "—",
+                valueColor = "{87CEFA}",
+                hint = "Сколько штук смазки уходит на одну успешную заточку.\n\n" ..
+                    buildLevelBreakdown(function(avg, lvl)
+                        return string.format("%d шт.", math.floor(avg * 2 + 0.5))
+                    end)
+            }})
+            imgui.EndChild()
+            imgui.PopStyleColor()
+            imgui.Spacing()
+
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.07, 0.08, 0.11, 1))
+            imgui.BeginChild("##improveCards", imgui.ImVec2(0, 0), true, imgui.WindowFlags.NoScrollWithMouse)
+            imgui.Scroller("improve_cards", 28, 240, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+
+            imgui.TextColoredRGB("{87CEFA}Список карт")
+            if imgui.IsItemHovered() then
+                imgui.SetTooltip(u8(
+                    "Сводка по каждой заточенной карте за выбранный период"))
+            end
+            imgui.Spacing()
+
+            local cardsList = stats.improveCards
+            if type(cardsList) == 'table' and #cardsList > 0 then
+                local function renderCardRow(c, rowId)
+                    local sLvl = c.startLevel or 0
+                    local eLvl = c.endLevel or sLvl
+                    local atk = c.attempts or 0
+                    local sp = c.spent or 0
+                    local oi = c.oils or 0
+                    local suc = c.success or 0
+                    local isSto = c.isStorage == true
+                    local progressed = eLvl > sLvl
+
+                    imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.12, 0.16, 1))
+                    imgui.BeginChild("##cardrow_" .. rowId, imgui.ImVec2(0, 28), true,
+                        imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+
+                    if isSto then
+                        local sLeft = string.format("{B0B0B0}#%d   {808080}ур.  {BEF781}%d   {C788FF}[ХР+]",
+                            c.slot or 0, sLvl)
+                        local sRight = string.format("{FFFFFF}%d поп.    {BEF781}%d усп.", atk, suc)
+                        local sLeftClean = sLeft:gsub("{%x%x%x%x%x%x}", "")
+                        local sRightClean = sRight:gsub("{%x%x%x%x%x%x}", "")
+                        local totalW = imgui.CalcTextSize(fa.LAYER_GROUP).x + 6 + imgui.CalcTextSize(u8(sLeftClean)).x +
+                                           12 + imgui.CalcTextSize(u8(sRightClean)).x
+                        local startX = math.max(8, (imgui.GetContentRegionAvail().x - totalW) / 2)
+
+                        imgui.SetCursorPos(imgui.ImVec2(startX, (28 - imgui.GetTextLineHeight()) / 2))
+                        imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.78, 0.53, 1.0, 1))
+                        imgui.Text(fa.LAYER_GROUP)
+                        imgui.PopStyleColor()
+                        imgui.SameLine(0, 6)
+                        imgui.TextColoredRGB(sLeft)
+                        imgui.SameLine(0, 12)
+                        imgui.TextColoredRGB(sRight)
+                    else
+                        local arrowColor = progressed and "{BEF781}" or "{808080}"
+                        local arrowVec = progressed and imgui.ImVec4(0.745, 0.945, 0.506, 1) or
+                                             imgui.ImVec4(0.502, 0.502, 0.502, 1)
+                        local sLeft = string.format("{B0B0B0}#%d   {808080}ур.  %s%d", c.slot or 0, arrowColor, sLvl)
+                        local sRight = string.format(
+                            "%s%d    {FFFFFF}%d поп.    {BEF781}%d усп.    {FFD700}$%s    {87CEFA}%d см.",
+                            arrowColor, eLvl, atk, suc, utils.formatNumber(sp), oi)
+                        local sLeftClean = sLeft:gsub("{%x%x%x%x%x%x}", "")
+                        local sRightClean = sRight:gsub("{%x%x%x%x%x%x}", "")
+                        local totalW =
+                            imgui.CalcTextSize(fa.MICROCHIP).x + 6 + imgui.CalcTextSize(u8(sLeftClean)).x + 6 +
+                                imgui.CalcTextSize(fa.ARROW_RIGHT).x + 6 + imgui.CalcTextSize(u8(sRightClean)).x
+                        local startX = math.max(8, (imgui.GetContentRegionAvail().x - totalW) / 2)
+
+                        imgui.SetCursorPos(imgui.ImVec2(startX, (28 - imgui.GetTextLineHeight()) / 2))
+                        imgui.Text(fa.MICROCHIP)
+                        imgui.SameLine(0, 6)
+                        imgui.TextColoredRGB(sLeft)
+                        imgui.SameLine(0, 6)
+                        imgui.PushStyleColor(imgui.Col.Text, arrowVec)
+                        imgui.Text(fa.ARROW_RIGHT)
+                        imgui.PopStyleColor()
+                        imgui.SameLine(0, 6)
+                        imgui.TextColoredRGB(sRight)
+                    end
+
+                    imgui.EndChild()
+                    imgui.PopStyleColor()
+
+                    if isSto then
+                        imgui.Hint(string.format(
+                            "Карта #%d (улучшение хранилища)\nУровень карты: %d (не меняется)\nПопыток: %d (успешных: %d)",
+                            c.slot or 0, sLvl, atk, suc))
+                    else
+                        imgui.Hint(string.format(
+                            "Карта #%d\nУровень: с %d до %d (Повышение на %d)\nПопыток: %d (успешных: %d)\nПотрачено: $%s\nСмазок: %d шт.",
+                            c.slot or 0, sLvl, eLvl, eLvl - sLvl, atk, suc, utils.formatNumber(sp), oi))
+                    end
+                end
+
+                local improveSig = tostring(#cardsList) .. "|" .. tostring(stats.improveSessions or 0) .. "|" ..
+                                       tostring(data.logsPeriodFilter)
+                if _improveFlatSig ~= improveSig then
+                    local sessions = {}
+                    for _, c in ipairs(cardsList) do
+                        local key = c.sessionId or ((c.date or '') .. '|' .. (c.time or ''))
+                        if not sessions[key] then
+                            sessions[key] = {
+                                key = key,
+                                date = c.date or '',
+                                time = c.time or '',
+                                startedAt = c.startedAt,
+                                cards = {}
+                            }
+                        end
+                        table.insert(sessions[key].cards, c)
+                    end
+                    local sessKeys = {}
+                    for k, _ in pairs(sessions) do
+                        table.insert(sessKeys, k)
+                    end
+                    table.sort(sessKeys, function(a, b)
+                        local sa, sb = sessions[a], sessions[b]
+                        if sa.date ~= sb.date then
+                            local function dkey(s)
+                                local d, m, y = s:match("(%d+)%.(%d+)%.(%d+)")
+                                return tonumber(string.format("%04d%02d%02d", tonumber(y) or 0, tonumber(m) or 0,
+                                    tonumber(d) or 0)) or 0
+                            end
+                            return dkey(sa.date) > dkey(sb.date)
+                        end
+                        local sat, sbt = sa.startedAt or 0, sb.startedAt or 0
+                        if sat > 0 and sbt > 0 then
+                            return sat > sbt
+                        end
+                        return (sa.time or '') > (sb.time or '')
+                    end)
+
+                    local showDateInHeader = data.logsPeriodFilter ~= 1
+                    _improveFlatRows = {}
+                    local rows = _improveFlatRows
+                    local rowIdx = 0
+                    for _, sk in ipairs(sessKeys) do
+                        local sess = sessions[sk]
+
+                        local sumSpent, sumOils = 0, 0
+                        local hasPerf, hasSto = false, false
+                        for _, c in ipairs(sess.cards) do
+                            sumSpent = sumSpent + (c.spent or 0)
+                            sumOils = sumOils + (c.oils or 0)
+                            if c.isStorage then
+                                hasSto = true
+                            else
+                                hasPerf = true
+                            end
+                        end
+
+                        local startStr = sess.startedAt and os.date('%H:%M', sess.startedAt) or sess.time
+
+                        local left
+                        if showDateInHeader and sess.date ~= '' then
+                            left = "{FFA500}" .. sess.date
+                        else
+                            left = "{FFA500}" .. ((hasSto and not hasPerf) and "Хранилище" or "Заточка")
+                        end
+                        local statsStr
+                        if hasSto and not hasPerf then
+                            statsStr = string.format("{808080}%d карт  ·  {C788FF}хранилище", #sess.cards)
+                        elseif hasSto and hasPerf then
+                            statsStr = string.format(
+                                "{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.  ·  {C788FF}+хранилище",
+                                #sess.cards, utils.formatNumber(sumSpent), sumOils)
+                        else
+                            statsStr = string.format("{808080}%d карт  ·  {FFD700}$%s  ·  {87CEFA}%d см.",
+                                #sess.cards, utils.formatNumber(sumSpent), sumOils)
+                        end
+
+                        rows[#rows + 1] = {
+                            kind = 'header',
+                            key = sk,
+                            left = left,
+                            time = "{B0B0B0}" .. startStr,
+                            stats = statsStr
+                        }
+
+                        table.sort(sess.cards, function(a, b)
+                            local ea = a.endLevel or 0
+                            local eb = b.endLevel or 0
+                            if ea ~= eb then
+                                return ea > eb
+                            end
+                            local ga = ea - (a.startLevel or 0)
+                            local gb = eb - (b.startLevel or 0)
+                            if ga ~= gb then
+                                return ga > gb
+                            end
+                            return (a.spent or 0) > (b.spent or 0)
+                        end)
+                        for _, c in ipairs(sess.cards) do
+                            rowIdx = rowIdx + 1
+                            rows[#rows + 1] = {
+                                kind = 'card',
+                                card = c,
+                                id = rowIdx
+                            }
+                        end
+                    end
+                    _improveFlatSig = improveSig
+                end
+
+                local rows = _improveFlatRows
+                local clipper = imgui.ImGuiListClipper()
+                clipper:Begin(#rows)
+                while clipper:Step() do
+                    for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                        local r = rows[i]
+                        if r.kind == 'header' then
+                            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
+                            imgui.BeginChild("##isess_" .. r.key, imgui.ImVec2(0, 28), true,
+                                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                            imgui.SetCursorPos(imgui.ImVec2(8, (28 - imgui.GetTextLineHeight()) / 2))
+                            imgui.Text(fa.CLOCK)
+                            imgui.SameLine(0, 6)
+                            imgui.TextColoredRGB(r.left)
+                            imgui.SameLine(0, 6)
+                            imgui.TextColoredRGB(r.time)
+                            imgui.SameLine(0, 12)
+                            imgui.TextColoredRGB(r.stats)
+                            imgui.EndChild()
+                            imgui.PopStyleColor()
+                        else
+                            renderCardRow(r.card, r.id)
+                        end
+                    end
+                end
+            else
+                local availH = imgui.GetContentRegionAvail().y
+                local availW = imgui.GetContentRegionAvail().x
+                imgui.SetCursorPosY(imgui.GetCursorPosY() + math.max(0, availH / 2 - 40))
+                local iconW = imgui.CalcTextSize(fa.BOX_OPEN).x
+                imgui.SetCursorPosX((availW - iconW) / 2)
+                imgui.PushStyleColor(imgui.Col.Text, imgui.ImVec4(0.25, 0.27, 0.32, 1))
+                imgui.Text(fa.BOX_OPEN)
+                imgui.PopStyleColor()
+                imgui.Spacing()
+                local txt1 = u8("Нет данных по картам")
+                local txt2 = u8("Запусти заточку — карты появятся здесь")
+                imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt1).x) / 2)
+                imgui.TextColoredRGB("{CCCCCC}Нет данных по картам")
+                imgui.SetCursorPosX((availW - imgui.CalcTextSize(txt2).x) / 2)
+                imgui.TextColoredRGB("{808080}Запусти заточкиу карты появятся здесь")
+            end
+            imgui.EndChild()
+            imgui.PopStyleColor()
+        end
     end
+    if data.logsResetConfirm then
+        local isImprove = data.logsResetMode == "improve"
+        renderResetConfirm("logsResetConfirm", data.logsResetTimer, isImprove and
+            "Удалить логи заточки?" or "Удалить все логи действий?",
+            "Это действие необратимо.", function()
+                if isImprove then
+                    logsTool.clearImprove()
+                    utils.addChat("{F78181}Логи заточки очищены.")
+                else
+                    logsTool.clear()
+                    utils.addChat("{F78181}Логи очищены.")
+                end
+                data.logsResetConfirm = false
+            end, function()
+                data.logsResetConfirm = false
+            end)
+    end
+end
+
+imgui.OnFrame(function()
+    return data.showHouseControlWindow[0] and data.mainMenuTab == "logs"
+end, function()
+    renderMainMenuSection(function()
+        renderLogsPage()
+    end)
 end)
 
 -- при заходе на ферму
 imgui.OnFrame(function()
     return data.main[0]
-end, function(self)
-    applyCustomStyle()
-    local w, h = getScreenResolution()
-    local windowSize = imgui.ImVec2(480.0, 323.0)
-    local margin_right = 0.0
-    local y_percent_top = 0.40
-
-    local posX = w - windowSize.x - margin_right
-    local posY = h * y_percent_top
-
-    posX = math.max(0, math.min(posX, w - windowSize.x))
-    posY = math.max(0, math.min(posY, h - windowSize.y))
-
+end, function()
+    applyStyle()
+    local sw, sh = getScreenResolution()
+    local windowSize = imgui.ImVec2(math.min(960, sw - 40), math.min(590, sh - 40))
     imgui.SetNextWindowSize(windowSize, imgui.Cond.Always)
-    imgui.SetNextWindowPos(imgui.ImVec2(posX, posY), imgui.Cond.Always)
+    imgui.SetNextWindowPos(imgui.ImVec2(sw / 2, sh / 2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5, 0.5))
 
-    if imgui.Begin("##main_windos", data.main,
+    if imgui.Begin("##rack_window", data.main,
         imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoResize +
-            imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoMove) then
-        imgui.customTitleBar(data.main, resetDefaultCfg, imgui.GetWindowWidth())
+            imgui.WindowFlags.NoTitleBar) then
+        imgui.customTitleBar(data.main, resetDefaultCfg, imgui.GetWindowWidth(), function()
+            closeRackWindow(true)
+        end)
 
-        __i__main()
+        local style = imgui.GetStyle()
+        local availW = imgui.GetContentRegionAvail().x
+        local availH = imgui.GetContentRegionAvail().y
+        local leftW = math.floor(availW * 0.62)
+        local gap = style.ItemSpacing.x
+
+        local rackRows = {}
+        for sourceIndex, card in ipairs(data.dialogData.videocards) do
+            rackRows[#rackRows + 1] = {
+                sourceIndex = sourceIndex,
+                card = card
+            }
+        end
+        if cfg.rackSortMode == 1 then
+            table.sort(rackRows, function(a, b)
+                local ac, bc = a.card, b.card
+                local aAttention = (not ac.working or (ac.coolant or 0) < cfg.useCoolantPercent) and 0 or 1
+                local bAttention = (not bc.working or (bc.coolant or 0) < cfg.useCoolantPercent) and 0 or 1
+                if aAttention ~= bAttention then
+                    return aAttention < bAttention
+                end
+                if (ac.coolant or 0) ~= (bc.coolant or 0) then
+                    return (ac.coolant or 0) < (bc.coolant or 0)
+                end
+                return (ac.shelf or a.sourceIndex) < (bc.shelf or b.sourceIndex)
+            end)
+        end
+        data.rackDisplayOrder = {}
+        for _, row in ipairs(rackRows) do
+            data.rackDisplayOrder[#data.rackDisplayOrder + 1] = row.sourceIndex
+        end
+
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0, 0, 0, 0))
+        imgui.BeginChild("##rack_cards_column", imgui.ImVec2(leftW, availH), false)
+        imgui.PopStyleColor()
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.10, 0.11, 0.15, 1))
+        imgui.BeginChild("##rack_cards_header", imgui.ImVec2(0, 34), true,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        local headerW = imgui.GetWindowWidth() - style.WindowPadding.x * 2
+        local columns = {0.01, 0.07, 0.17, 0.36, 0.72, 0.82}
+        local headers = {"№", "Полка", "Состояние", "Прибыль", "Ур.", "Охлажд."}
+        for i, label in ipairs(headers) do
+            imgui.SetCursorPos(imgui.ImVec2(style.WindowPadding.x + headerW * columns[i], 9))
+            imgui.TextDisabled(u8(label))
+        end
+        imgui.EndChild()
+        imgui.PopStyleColor()
+
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0, 0, 0, 0))
+        imgui.BeginChild("##rack_cards_list", imgui.ImVec2(0, -48), false, imgui.WindowFlags.NoScrollWithMouse)
+        imgui.PopStyleColor()
+        imgui.Scroller("rack_cards_list", 36, 280, imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
+        if data.rackScrollToSelection then
+            local rowStride = 36 + style.ItemSpacing.y
+            local targetScroll = math.max(0, (data.rackScrollToSelection - 1) * rowStride - rowStride)
+            targetScroll = math.min(targetScroll, imgui.GetScrollMaxY())
+            imgui.ScrollToPosition("rack_cards_list", targetScroll, 260)
+            data.rackScrollToSelection = nil
+        end
+
+        local function rackContextItem(label, enabled, action, sourceIndex, disabledHint)
+            if enabled then
+                if imgui.MenuItemBool(u8(label)) then
+                    runRackCardAction(action, sourceIndex)
+                end
+            else
+                imgui.PushStyleColor(imgui.Col.Text, imgui.GetStyle().Colors[imgui.Col.TextDisabled])
+                imgui.Selectable(u8(label .. "##disabled"), false, imgui.SelectableFlags.Disabled)
+                imgui.PopStyleColor()
+                if disabledHint then
+                    imgui.Hint(disabledHint)
+                end
+            end
+        end
+
+        if #rackRows == 0 then
+            imgui.SetCursorPosY(imgui.GetCursorPosY() + 30)
+            imgui.TextDisabled(u8 "Видеокарты не найдены")
+        else
+            for displayIndex, row in ipairs(rackRows) do
+                local i, card = row.sourceIndex, row.card
+                local selected = data.selectedRackCardIndex == i
+                imgui.PushStyleColor(imgui.Col.ChildBg, selected and imgui.ImVec4(0.14, 0.28, 0.50, 0.72) or
+                    imgui.ImVec4(0.08, 0.09, 0.12, 0.85))
+                imgui.BeginChild("##rack_card_row_" .. i, imgui.ImVec2(0, 36), false,
+                    imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+                local rowW = imgui.GetWindowWidth() - style.WindowPadding.x * 2
+                local startPos = imgui.GetCursorPos()
+                if imgui.InvisibleButton("##rack_card_select_" .. i, imgui.ImVec2(-1, 30)) then
+                    data.selectedRackCardIndex = i
+                    selectRackCard()
+                end
+                local rowHovered = imgui.IsItemHovered()
+                if rowHovered then
+                    if not selected then
+                        local rowMin = imgui.GetWindowPos()
+                        local rowSize = imgui.GetWindowSize()
+                        local rowMax = imgui.ImVec2(rowMin.x + rowSize.x, rowMin.y + rowSize.y)
+                        imgui.GetWindowDrawList():AddRectFilled(rowMin, rowMax, imgui.ColorConvertFloat4ToU32(
+                            imgui.ImVec4(0.16, 0.30, 0.48, 0.42)), style.ChildRounding)
+                    end
+                end
+                imgui.SetCursorPos(startPos)
+
+                imgui.SetCursorPos(imgui.ImVec2(style.WindowPadding.x + rowW * columns[1], startPos.y + 6))
+                imgui.Text(u8(tostring(displayIndex)))
+                imgui.SetCursorPos(imgui.ImVec2(style.WindowPadding.x + rowW * columns[2], startPos.y + 6))
+                imgui.Text(u8(string.format("№%d", card.shelf or i)))
+                imgui.SetCursorPos(imgui.ImVec2(style.WindowPadding.x + rowW * columns[3], startPos.y + 6))
+                imgui.TextColoredRGB((card.working and "{BEF781}" or "{F78181}") ..
+                                         (card.statusText or
+                                             (card.working and "Работает" or "Не активна")))
+                imgui.SetCursorPos(imgui.ImVec2(style.WindowPadding.x + rowW * columns[4], startPos.y + 6))
+                local profitColor = card.card_type == "ASC" and "{FFA500}" or "{BEF781}"
+                imgui.TextColoredRGB(profitColor .. (card.profitText or "0.000000"))
+                imgui.SetCursorPos(imgui.ImVec2(style.WindowPadding.x + rowW * columns[5], startPos.y + 6))
+                imgui.Text(u8(string.format("%d", card.level or 0)))
+                imgui.SetCursorPos(imgui.ImVec2(style.WindowPadding.x + rowW * columns[6], startPos.y + 6))
+                local coolantColor = (card.coolant or 0) < cfg.useCoolantPercent and "{F78181}" or "{87CEFA}"
+                imgui.TextColoredRGB(coolantColor .. string.format("%.2f%%", card.coolant or 0))
+                imgui.EndChild()
+                imgui.PopStyleColor()
+
+                if rowHovered and imgui.IsMouseClicked(1) and not data.working then
+                    data.selectedRackCardIndex = i
+                    imgui.OpenPopup("rack_card_context_" .. i)
+                end
+                if imgui.BeginPopup("rack_card_context_" .. i) then
+                    if data.rackCardActionActive and data.rackPendingStartedAt > 0 and os.clock() -
+                        data.rackPendingStartedAt > 4.0 then
+                        finishRackCardAction()
+                    end
+                    local actionBusy = data.working or data.rackCardActionActive or os.clock() <
+                                           (data.rackActionCooldownUntil or 0)
+                    rackContextItem(card.working and "Остановить видеокарту" or
+                                        "Запустить видеокарту", not actionBusy, 'switch', i)
+                    rackContextItem(string.format("Забрать прибыль BTC (%.6f)", card.btc_full or 0),
+                        not actionBusy and (card.btc or 0) >= 1, 'btc', i,
+                        "Для снятия нужен минимум 1 BTC.")
+                    rackContextItem(string.format("Забрать прибыль ASC (%.6f)", card.asc_full or 0),
+                        not actionBusy and (card.asc or 0) >= 1, 'asc', i,
+                        "Для снятия нужен минимум 1 ASC.")
+                    if not data.isFlashminer then
+                        imgui.Separator()
+                        rackContextItem("Залить охлаждающую жидкость", not actionBusy,
+                            'coolant', i)
+                        local canRemove = not actionBusy and (card.coolant or 0) >= 99.995
+                        local removeHint = actionBusy and
+                                               "Дождитесь завершения текущего действия." or
+                                               "Достать карту можно только при охлаждении 100%."
+                        rackContextItem("Достать видеокарту", canRemove, 'remove', i, removeHint)
+                    end
+                    imgui.EndPopup()
+                end
+
+                if rowHovered and cfg.rackShowRawTooltip then
+                    imgui.BeginTooltip()
+                    imgui.TextColoredRGB(card.rawLine or "")
+                    imgui.EndTooltip()
+                end
+                imgui.Spacing()
+            end
+        end
+        imgui.EndChild()
+
+        local actionWidth = (imgui.GetContentRegionAvail().x - gap) / 2
+        if ButtonWithHint(u8 "Выбрать", "Открыть выбранную видеокарту",
+            not data.working and #data.dialogData.videocards > 0, imgui.ImVec2(actionWidth, 36)) then
+            selectRackCard()
+        end
+        imgui.SameLine()
+        if ButtonWithHint(u8 "Закрыть", "Закрыть стойку", not data.working,
+            imgui.ImVec2(actionWidth, 36)) then
+            closeRackWindow(true)
+        end
+        imgui.EndChild()
+
+        imgui.SameLine(0, gap)
+        imgui.BeginChild("##rack_tools_column", imgui.ImVec2(0, availH), false,
+            imgui.WindowFlags.NoScrollWithMouse + imgui.WindowFlags.NoScrollbar)
+
+        local navH = 0
+        if data.isFlashminer then
+            local navChildH = 120
+            local navButtonSize = 100
+            local navGap = 24
+
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0, 0, 0, 0))
+            imgui.BeginChild("##rack_house_navigation", imgui.ImVec2(0, navChildH), true,
+                imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+            imgui.PopStyleColor()
+            local navStartX = (imgui.GetWindowWidth() - navButtonSize * 2 - navGap) / 2
+            imgui.SetCursorPos(imgui.ImVec2(navStartX, (navChildH - navButtonSize) / 2))
+            if ButtonWithHint(fa.ARROW_LEFT .. "##previous_house",
+                "Перейтиему ому (клавиша влево)", not data.working,
+                imgui.ImVec2(navButtonSize, navButtonSize)) then
+                flashminerTool.navigate(-1)
+            end
+            imgui.SameLine(0, navGap)
+            if ButtonWithHint(fa.ARROW_RIGHT .. "##next_house",
+                "Перейтиму ому (клавиша вправо)", not data.working,
+                imgui.ImVec2(navButtonSize, navButtonSize)) then
+                flashminerTool.navigate(1)
+            end
+            imgui.EndChild()
+            imgui.Dummy(imgui.ImVec2(0, 2))
+            navH = navChildH + 2
+        end
+
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1))
+        imgui.BeginChild("##rack_summary", imgui.ImVec2(0, 125), true,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        if data.isFlashminer then
+            imgui.TextColoredRGB('{ffffff}Дом: {ffa500}№' .. (data.forImgui.dTitle or "Неизвестно"))
+        else
+            imgui.TextColoredRGB('{87CEFA}Стойка видеокарт')
+        end
+        imgui.TextColoredRGB('{ffffff}Состояние: ' ..
+                                 (data.forImgui.allGood and '{BEF781}всё исправно' or
+                                     '{F78181}требуется внимание'))
+        local maxCards = data.isFlashminer and 20 or 4
+        imgui.TextColoredRGB(string.format('{ffffff}Установлено: {99ff99}%d {808080}/ %d',
+            data.forImgui.videocardCount or 0, maxCards))
+        imgui.TextColoredRGB('{ffffff}Доступно: {BEF781}' .. (data.forImgui.earnings.btc or 0) .. ' BTC' ..
+                                 ' {ffffff}| {ffa500}' .. (data.forImgui.earnings.asc or 0) .. ' ASC')
+        local attention = data.forImgui.attentionTime or 0
+        imgui.TextColoredRGB('{ffffff}До обслуживания: {ffa500}~' ..
+                                 math.floor(utils.calculateRemainingHours(attention)) .. " {ffffff}ч.")
+        imgui.EndChild()
+        imgui.PopStyleColor()
+        imgui.Dummy(imgui.ImVec2(0, 2))
+
+        local actionsH = math.max(0, availH - navH - 105 - 2)
+
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.08, 0.09, 0.12, 1))
+        imgui.BeginChild("##rack_actions", imgui.ImVec2(0, actionsH), true,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        imgui.PopStyleColor()
+
+        local buttonHeight = 36
+
+        local canWithdraw = data.forImgui.earnings.btc >= 1 or data.forImgui.earnings.asc >= 1
+        local withdrawHint = canWithdraw and "Снять всю доступную криптовалюту" or
+                                 "Нет криптовалюты для снятия"
+        if data.working then
+            withdrawHint = "Дождитесь завершения текущей операции"
+        end
+        if ButtonWithHint(u8 "Снять криптовалюту", withdrawHint, canWithdraw and not data.working,
+            imgui.ImVec2(-1, buttonHeight)) then
+            coolantTool.resetSupplyFlag()
+            local task = buildTaskTable('takeCrypto')
+            task:takeCrypto()
+        end
+
+        local halfButtonWidth = (imgui.GetContentRegionAvail().x - style.ItemSpacing.x) / 2
+        if ButtonWithHint(u8 "Включить карты",
+            "Включить все доступные видеокарты", not data.working,
+            imgui.ImVec2(halfButtonWidth, buttonHeight)) then
+            local task = buildTaskTable('switchCards')
+            task:switchCards(true)
+        end
+        imgui.SameLine()
+        if ButtonWithHint(u8 "Выключить карты", "Выключить все видеокарты",
+            not data.working, imgui.ImVec2(halfButtonWidth, buttonHeight)) then
+            local task = buildTaskTable('switchCards')
+            task:switchCards(false)
+        end
+
+        if not data.isFlashminer then
+            local coolantHint = data.working and
+                                    "Дождитесь завершения текущей операции" or
+                                    "Заполнить охлаждение всех видеокарт"
+            if ButtonWithHint(u8 "Залить охлаждение", coolantHint, not data.working,
+                imgui.ImVec2(-1, buttonHeight)) then
+                local task = buildTaskTable('coolant')
+                task:coolant()
+            end
+        end
+
+        imgui.Spacing()
+        imgui.Separator()
+        imgui.Spacing()
+        if imgui.ToggleButton(u8 "Супер-жидкость##imcfg_useSuperCoolant", imcfg.useSuperCoolant) then
+            cfg.useSuperCoolant = imcfg.useSuperCoolant[0]
+            save()
+        end
+        imgui.SameLine()
+        imgui.Hint(
+            "Использовать суперохлаждающую жидкость вместо обычной.")
+        if imgui.ToggleButton(u8 "Экономный режим##econom", imcfg.economyMode) then
+            cfg.economyMode = imcfg.economyMode[0]
+            save()
+        end
+        imgui.Hint(
+            "Не тратить вторую обычную жидкость, если одной достаточно.")
+
+        if not data.isFlashminer then
+            imgui.Spacing()
+            imgui.Separator()
+            imgui.Spacing()
+            imgui.TextColoredRGB("{87CEFA}Автоматизация стойки")
+            if imgui.ToggleButton(u8 "Авто-заливка при открытии##rack_direct_fixCoolantEnabled",
+                imcfg.fixCoolantEnabled) then
+                cfg.fixCoolantEnabled = imcfg.fixCoolantEnabled[0]
+                save()
+            end
+            if imgui.ToggleButton(
+                u8 "Авто-включение карт после заливки##rack_direct_autoEnableCards",
+                imcfg.autoEnableCards) then
+                cfg.autoEnableCards = imcfg.autoEnableCards[0]
+                if cfg.autoEnableCards then
+                    cfg.autoEnableCardsOnOpen = false
+                    imcfg.autoEnableCardsOnOpen[0] = false
+                end
+                save()
+            end
+            imgui.Hint(
+                "После заливки жидкости автоматически включать выключенные карты.\nНе совместимо с 'Авто-включение при открытии стойки'.")
+            if imgui.ToggleButton(
+                u8 "Авто-включение при открытии##rack_direct_autoEnableCardsOnOpen",
+                imcfg.autoEnableCardsOnOpen) then
+                cfg.autoEnableCardsOnOpen = imcfg.autoEnableCardsOnOpen[0]
+                if cfg.autoEnableCardsOnOpen then
+                    cfg.autoEnableCards = false
+                    imcfg.autoEnableCards[0] = false
+                end
+                save()
+            end
+            imgui.Hint(
+                "Включать выключенные карты при открытии стойки,\nнезависимо от заливки жидкости.\nНе совместимо с 'Авто-включение после заливки'.")
+        end
+
+        imgui.Spacing()
+        imgui.Separator()
+        imgui.Spacing()
+        imgui.TextColoredRGB("{87CEFA}Порог заливки")
+        imgui.Hint("Заполнять, если охлаждение ниже указанного процента.")
+        imgui.PushItemWidth(math.max(120, imgui.GetContentRegionAvail().x - 4))
+        if imgui.SliderInt("##coolantPercent", imcfg.useCoolantPercent, 1, 100, u8 "%d%%") then
+            cfg.useCoolantPercent = imcfg.useCoolantPercent[0]
+            save()
+        end
+        imgui.Hint("Заполнять, если охлаждение ниже указанного процента.")
+        imgui.PopItemWidth()
+
+        imgui.EndChild()
+        imgui.EndChild()
+
         imgui.showNotifications(2)
         imgui.End()
     end
 end)
-
-function __i__main()
-    imgui.BeginChild('##top_panel_unified', imgui.ImVec2(0, 104), true, imgui.WindowFlags.NoScrollbar)
-    imgui.Columns(2, "##main_columns_unified", false, imgui.WindowFlags.NoScrollbar)
-    imgui.SetColumnWidth(0, 255)
-    -- Левая колонка с информацией
-    __i__infoPanel()
-    imgui.NextColumn()
-    -- Правая колонка с кнопками управления
-    __i__controlPanel()
-
-    imgui.Columns(1)
-    imgui.EndChild()
-
-    -- Нижняя панель
-    __i__bottomPanel()
-end
-
-function __i__infoPanel()
-    imgui.BeginChild('##info_panel_child', imgui.ImVec2(0, -1), false, imgui.WindowFlags.NoScrollbar)
-    local title_text = data.forImgui.dTitle or "Ожидание..."
-    imgui.TextColoredRGB('{ffffff}Дом: {ffa500}№ ' .. title_text)
-    imgui.TextColoredRGB('{ffffff}Статус фермы: ' ..
-                             (data.forImgui.allGood and '{BEF781}Всё хорошо.' or
-                                 '{F78181}Требует внимания.'))
-    imgui.TextColoredRGB('{ffffff}Количество видеокарт: {99ff99}' .. data.forImgui.videocardCount)
-    imgui.TextColoredRGB('{ffffff}Можно снять: {BEF781}' .. data.forImgui.earnings.btc .. ' BTC' ..
-                             (not data.isRodina and ' {ffffff}|| {ffa500}' .. data.forImgui.earnings.asc .. ' ASC' or ''))
-    imgui.TextColoredRGB('{ffffff}Проработает: {ffa500}~' ..
-                             math.floor(utils.calculateRemainingHours(data.forImgui.attentionTime)) ..
-                             " {ffffff}часов")
-    imgui.EndChild()
-end
-
-function __i__controlPanel()
-    local availableWidth = imgui.GetContentRegionAvail().x
-    local buttonSide = ((availableWidth - imgui.GetStyle().ItemSpacing.x) / 2) - 2
-    local buttonSize = imgui.ImVec2(buttonSide, buttonSide - 5)
-
-    if data.isFlashminer then
-        if ButtonWithHint(fa.ARROW_LEFT .. "##left", "Переключиться на предыдущую ферму.",
-            not data.working, buttonSize) then
-            flashminerTool.navigate(-1)
-        end
-
-        imgui.SameLine(0, imgui.GetStyle().ItemSpacing.x + 5)
-
-        if ButtonWithHint(fa.ARROW_RIGHT .. "##right", "Переключиться на следующую ферму.",
-            not data.working, buttonSize) then
-            flashminerTool.navigate(1)
-        end
-    else
-        ButtonWithHint(fa.ARROW_LEFT .. "##left_disabled",
-            "Доступно только в Флешке Майнера.", false, buttonSize)
-        imgui.SameLine(0, imgui.GetStyle().ItemSpacing.x + 5)
-        ButtonWithHint(fa.ARROW_RIGHT .. "##right_disabled",
-            "Доступно только в Флешке Майнера.", false, buttonSize)
-    end
-end
-
-function __i__bottomPanel()
-    imgui.BeginChild('##bottom_panel_child', imgui.ImVec2(0, 0), false, imgui.WindowFlags.NoScrollbar)
-
-    local style = imgui.GetStyle()
-    local textLineHeight = imgui.GetTextLineHeight()
-    local sliderHeight = textLineHeight + style.FramePadding.y * 2
-    local staticContentHeight = (textLineHeight * 2) + sliderHeight + (style.ItemSpacing.y * 2)
-
-    local availableHeight = imgui.GetContentRegionAvail().y
-    local dynamicHeight = availableHeight - staticContentHeight
-    local elementHeight = (dynamicHeight - (style.ItemSpacing.y * 3)) / 4 - 1
-
-    if elementHeight < 20 then
-        elementHeight = 20
-    end
-
-    -- Ряд 1: Кнопка "Снять криптовалюту"
-    local canWithdraw = data.forImgui.earnings.btc >= 1 or data.forImgui.earnings.asc >= 1
-    local withdrawHint = canWithdraw and "Снять всю доступную криптовалюту" or
-                             "Нет криптовалюты для снятия"
-    if data.working then
-        withdrawHint = "Дождитесь завершения текущей операции"
-    end
-
-    if ButtonWithHint(u8 "Снять криптовалюту", withdrawHint, canWithdraw and not data.working,
-        imgui.ImVec2(-1, elementHeight)) then
-        coolantTool.resetSupplyFlag()
-        local task = buildTaskTable('takeCrypto')
-        task:takeCrypto()
-    end
-
-    -- Ряд 2: Кнопки "Включить/Выключить"
-    local halfButtonWidth = (imgui.GetContentRegionAvail().x - style.ItemSpacing.x) / 2
-
-    local switchOnHint = data.working and "Дождитесь завершения текущей операции" or
-                             "Включить все видеокарты"
-    if ButtonWithHint(u8 "Включить видеокарты", switchOnHint, not data.working,
-        imgui.ImVec2(halfButtonWidth, elementHeight)) then
-        local task = buildTaskTable('switchCards')
-        task:switchCards(true)
-    end
-
-    imgui.SameLine()
-
-    local switchOffHint = data.working and "Дождитесь завершения текущей операции" or
-                              "Выключить все видеокарты"
-    if ButtonWithHint(u8 "Выключить видеокарты", switchOffHint, not data.working,
-        imgui.ImVec2(halfButtonWidth, elementHeight)) then
-        local task = buildTaskTable('switchCards')
-        task:switchCards(false)
-    end
-
-    -- Ряд 3: Кнопка "Залить жидкость"
-    local canRefill = not data.isFlashminer and not data.working
-    local coolantHint
-    if data.isFlashminer then
-        coolantHint = "Недоступно в флешке майнера"
-    elseif data.working then
-        coolantHint = "Дождитесь завершения текущей операции"
-    else
-        coolantHint = "Залить охлаждающую жидкость во все видеокарты"
-    end
-
-    if ButtonWithHint(u8 "Залить жидкость", coolantHint, canRefill, imgui.ImVec2(-1, elementHeight)) then
-        local task = buildTaskTable('coolant')
-        task:coolant()
-    end
-
-    -- Ряд 4: Чекбоксы.
-    local cursorY_before = imgui.GetCursorPosY()
-    imgui.Dummy(imgui.ImVec2(-1, elementHeight))
-    local cursorY_after = imgui.GetCursorPosY()
-
-    local checkboxHeight = textLineHeight + style.FramePadding.y * 2
-    imgui.SetCursorPosY(cursorY_before + (elementHeight - checkboxHeight) / 2)
-
-    if imgui.Checkbox(u8 "Использовать Супер Охлаждающую Жидкость",
-        imcfg.useSuperCoolant) then
-        cfg.useSuperCoolant = imcfg.useSuperCoolant[0];
-        save()
-    end
-    imgui.Hint(
-        "Использовать Супер Охлаждающую Жидкость вместо обычной.\n(Для  BTC карт и Asic Miner)")
-    imgui.SameLine()
-    if imgui.Checkbox(u8 "Режим Экономии##econom", imcfg.economyMode) then
-        cfg.economyMode = imcfg.economyMode[0];
-        save()
-    end
-    imgui.Hint(
-        "Включает экономию охлаждающей жидкости.\nРаботает только с обычными жидкостями и вне Вайс-Сити (и не для суперохлаждающих).\nКак это работает: если посли заливки одной жидкости уровень охлаждения достигает 70 и выше, то вторая жидкость не расходуется.\nБез этого режима скрипт всегда заполняет охлаждение до 100%.")
-
-    imgui.SetCursorPosY(cursorY_after)
-
-    imgui.Text(u8 "Порог срабатывания заливки:")
-    imgui.TextDisabled(
-        u8 "Если процент охлаждающей жидкости < настроенной ниже, то заливаем.")
-    imgui.PushItemWidth(-1)
-    if imgui.SliderInt("##coolantPercent", imcfg.useCoolantPercent, 1, 100) then
-        cfg.useCoolantPercent = imcfg.useCoolantPercent[0];
-        save()
-    end
-    imgui.PopItemWidth()
-
-    imgui.EndChild()
-end
 
 -- при флешке майнера
 local _fashFrame = 0
@@ -10038,86 +10448,24 @@ end
 
 -- флешка майнера
 imgui.OnFrame(function()
-    return data.showHouseControlWindow[0]
+    return data.showHouseControlWindow[0] and data.mainMenuTab == "houses"
 end, function(player)
     _fashFrame = _fashFrame + 1
-    if not cfg.helpShown and not cfg.useDialogMode then
-        data.setupPage = 1
-        data.helpWindowMode = 'setup'
-        data.showHelpWindow[0] = true
-        cfg.helpShown = true
-        save()
-    end
-    applyStyle()
-    local sw, sh = getScreenResolution()
-    imgui.SetNextWindowSize(imgui.ImVec2(1000, 680), imgui.Cond.FirstUseEver)
-    imgui.SetNextWindowPos(imgui.ImVec2(sw / 2, sh / 2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5, 0.5))
 
-    if imgui.Begin(u8 "Mining Tools##MainWin", data.showHouseControlWindow,
-        imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize) then
-        imgui.customTitleBar(data.showHouseControlWindow, resetDefaultCfg, imgui.GetWindowWidth())
-
+    renderMainMenuSection(function()
         local filteredHouses, availableLevels, availableCities = filterAndSortHouses(data.dialogData.flashminer)
         data.filteredHouses = filteredHouses
         -- Подсчет статистики
         local totalHouses = #data.dialogData.flashminer
-        local housesGood, housesWarning, housesBad = 0, 0, 0
         local totalBalance, totalBTC, totalASC = 0, 0, 0
-        local badHousesIssues = {}
-        local warningHousesIssues = {}
-        local totalCoolantsAll = 0
 
         for _, house in ipairs(data.dialogData.flashminer) do
             local status = data.houseStatuses[house.house_number]
             totalBalance = totalBalance + (house.balance or 0)
-
-            if status then
-                totalCoolantsAll = totalCoolantsAll + (status.coolantsNeeded or 0)
-            end
-
-            if not (status and status.lastCheck > 0) then
-                goto continue
-            end
-
-            local earnings = status.earnings or {}
-            totalBTC = totalBTC + (earnings.btc or 0)
-            totalASC = totalASC + (earnings.asc or 0)
-
-            local counters = {
-                good = housesGood,
-                warning = housesWarning,
-                bad = housesBad
-            }
-            local issuesTables = {
-                warning = warningHousesIssues,
-                bad = badHousesIssues
-            }
-
-            if counters[status.status] then
-                counters[status.status] = counters[status.status] + 1
-
-                if issuesTables[status.status] and status.issues and #status.issues > 0 then
-                    issuesTables[status.status][house.house_number] = status.issues
-                end
-            end
-
-            housesGood, housesWarning, housesBad = counters.good, counters.warning, counters.bad
-
-            ::continue::
-        end
-
-        local nearestMaintenanceHours = nil
-        local nearestMaintenanceHouse = nil
-        for _, house in ipairs(data.dialogData.flashminer) do
-            if houseFilter.shouldProcess(house) then
-                local status = data.houseStatuses[house.house_number]
-                if status and status.lastCheck > 0 and status.minCoolant and status.minCoolant <= 100 then
-                    local hours = utils.calculateRemainingHours(status.minCoolant)
-                    if not nearestMaintenanceHours or hours < nearestMaintenanceHours then
-                        nearestMaintenanceHours = hours
-                        nearestMaintenanceHouse = house.house_number
-                    end
-                end
+            if status and status.lastCheck > 0 then
+                local earnings = status.earnings or {}
+                totalBTC = totalBTC + (earnings.btc or 0)
+                totalASC = totalASC + (earnings.asc or 0)
             end
         end
 
@@ -10131,7 +10479,7 @@ end, function(player)
 
         -- Плитки статистики
         local availWidth = imgui.GetContentRegionAvail().x
-        local statCardWidth = (availWidth - 24) / 4
+        local statCardWidth = (availWidth - 16) / 3
 
         local function DrawStatTile(childId, icon, label, value, valColor, hintText)
             imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1.00))
@@ -10170,7 +10518,7 @@ end, function(player)
         imgui.SameLine()
 
         -- Колонка 2: Криптовалюта
-        local cryptoText = formatEarnings(totalBTC, totalASC, not data.isRodina)
+        local cryptoText = formatEarnings(totalBTC, totalASC, true)
         local totalHint = string.format(
             "{FFFFFF}Общее количество криптовалюты для снятия.\n\n{BEF781}Общий доход всех ферм:\n{FFFFFF}%.3f BTC / день",
             allBtc)
@@ -10184,126 +10532,20 @@ end, function(player)
         -- Колонка 3: Общий баланс
         DrawStatTile("balance", fa.DOLLAR_SIGN, "{FFD700}Баланс:", "$" .. utils.formatNumber(totalBalance),
             "{FFFFFF}", "Общий баланс всех домов")
-        imgui.SameLine()
+        imgui.Dummy(imgui.ImVec2(0, 2))
 
-        -- Колонка 4: Статусы домов
-        local parts = {}
-        if housesGood > 0 then
-            table.insert(parts, string.format("{4DE94C}%d", housesGood))
-        end
-        if housesWarning > 0 then
-            table.insert(parts, string.format("{FFE133}%d", housesWarning))
-        end
-        if housesBad > 0 then
-            table.insert(parts, string.format("{FF3333}%d", housesBad))
-        end
-
-        local statusText = #parts > 0 and table.concat(parts, " {FFFFFF}/ ") or "{808080}Не проверено"
-
-        local hintLines = {"{FFFFFF}Сводка по состоянию домов:", "--------------------"}
-
-        local function appendIssues(title, issuesMap)
-            table.insert(hintLines, title)
-            for houseNum, issues in pairs(issuesMap) do
-                table.insert(hintLines, "  {FFA500}Дом №" .. houseNum .. ":")
-                for _, issue in ipairs(issues) do
-                    table.insert(hintLines, "    • " .. issue)
-                end
-            end
-            table.insert(hintLines, "")
-        end
-
-        local hasIssues = false
-        if next(badHousesIssues) ~= nil then
-            hasIssues = true
-            appendIssues(fa.CIRCLE_EXCLAMATION .. " {FF3333}Критические проблемы:", badHousesIssues)
-        end
-        if next(warningHousesIssues) ~= nil then
-            hasIssues = true
-            appendIssues(fa.TRIANGLE_EXCLAMATION .. " {FFE133}Требуют внимания:", warningHousesIssues)
-        end
-        if not hasIssues then
-            table.insert(hintLines, fa.CIRCLE_CHECK .. " {4DE94C}Проблем не обнаружено.")
-            table.insert(hintLines, "")
-        end
-
-        table.insert(hintLines, "--------------------")
-        table.insert(hintLines, string.format(
-            "{87CEFA}Всего требуется охлаждаек: {FFFFFF}%d шт.", totalCoolantsAll))
-
-        if nearestMaintenanceHouse and nearestMaintenanceHours then
-            table.insert(hintLines, "")
-            table.insert(hintLines,
-                string.format("{FFA500}Ближайшее обслуживание:\n{FFFFFF}~%dч — Дом №%d",
-                    math.floor(nearestMaintenanceHours), nearestMaintenanceHouse))
-        end
-
-        local statusHint = table.concat(hintLines, "\n")
-
-        DrawStatTile("status", fa.CHART_PIE, "{87CEFA}Состояние:", statusText, "{FFFFFF}", statusHint)
-
-        local cache = logsTool.getCacheSummary()
-        local logTotalBtc = cache.collectBtc
-        local logTotalAsc = cache.collectAsc
-        local logTotalSessions = cache.sessions
-
-        imgui.Spacing()
-
-        local barH = 30
-        local isLogsHovered = false
-
-        imgui.PushStyleColor(imgui.Col.ChildBg, data.showLogsWindow[0] and imgui.ImVec4(0.12, 0.18, 0.28, 1.00) or
-            imgui.ImVec4(0.09, 0.10, 0.14, 1.00))
-        imgui.BeginChild("##logsSummaryBar", imgui.ImVec2(0, barH), true,
-            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
-
-        local ww = imgui.GetWindowWidth()
-
-        imgui.SetCursorPos(imgui.ImVec2(12, (barH - imgui.GetTextLineHeight()) / 2))
-        imgui.BeginGroup()
-        imgui.Text(fa.CLOCK_ROTATE_LEFT)
-        imgui.SameLine(0, 6)
-
-        local summaryStr
-        if logTotalSessions == 0 then
-            summaryStr = u8 "Нет записей"
-        else
-            summaryStr = u8(string.format("Собрано за всё время: %d BTC", logTotalBtc))
-            if logTotalAsc > 0 then
-                summaryStr = summaryStr .. u8(string.format("  /  %d ASC", logTotalAsc))
-            end
-            summaryStr = summaryStr .. u8(string.format("   ·   %d записей", logTotalSessions))
-        end
-        imgui.Text(summaryStr)
-        imgui.EndGroup()
-
-        local arrowIcon = data.showLogsWindow[0] and fa.CHEVRON_UP or fa.CHEVRON_DOWN
-        local arrowW = imgui.CalcTextSize(arrowIcon).x
-        imgui.SetCursorPos(imgui.ImVec2(ww - arrowW - 14, (barH - imgui.GetTextLineHeight()) / 2))
-        imgui.TextDisabled(arrowIcon)
-
-        imgui.SetCursorPos(imgui.ImVec2(0, 0))
-        if imgui.InvisibleButton("##logsBarBtn", imgui.ImVec2(ww, barH)) then
-            data.showLogsWindow[0] = not data.showLogsWindow[0]
-        end
-        isLogsHovered = imgui.IsItemHovered()
-        if isLogsHovered then
-            imgui.SetTooltip(u8(data.showLogsWindow[0] and "Закрыть историю" or
-                                    "Открыть историю"))
-        end
-
-        imgui.EndChild()
-        imgui.PopStyleColor()
-        imgui.Spacing()
-
-        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.09, 0.10, 0.14, 1.00))
-        imgui.BeginChild("##action_panel", imgui.ImVec2(0, 60), true)
+        imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0, 0, 0, 0))
+        imgui.BeginChild("##action_panel", imgui.ImVec2(0, 45), false)
         imgui.showNotifications(2)
 
-        local btnWidth = (availWidth - 55) / 5
         local btnHeight = 35
+        local actionGap = imgui.GetStyle().ItemSpacing.x
+        local actionRowWidth = math.min(availWidth, imgui.GetWindowWidth())
+        local btnWidth = (actionRowWidth - actionGap * 4) / 5
+        imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionRowWidth) / 2, (45 - btnHeight) / 2))
 
         local function DrawActionBtn(label, icon, colorVec, taskName, arg)
+            imgui.PushStyleColor(imgui.Col.Border, imgui.ImVec4(0, 0, 0, 0))
             imgui.PushStyleColor(imgui.Col.Button, colorVec)
             imgui.PushStyleColor(imgui.Col.ButtonHovered,
                 imgui.ImVec4(colorVec.x * 1.2, colorVec.y * 1.2, colorVec.z * 1.2, 1.0))
@@ -10311,7 +10553,7 @@ end, function(player)
                 imgui.ImVec4(colorVec.x * 0.8, colorVec.y * 0.8, colorVec.z * 0.8, 1.0))
 
             local pressed = imgui.Button(icon .. " " .. u8(label), imgui.ImVec2(btnWidth, btnHeight))
-            imgui.PopStyleColor(3)
+            imgui.PopStyleColor(4)
 
             if pressed then
                 if data.selectedHouseIndex and data.dialogData.flashminer[data.selectedHouseIndex] then
@@ -10377,11 +10619,13 @@ end, function(player)
         imgui.EndChild()
         imgui.PopStyleColor()
 
-        imgui.Spacing()
+        imgui.Dummy(imgui.ImVec2(0, 2))
 
         imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.08, 0.09, 0.12, 1.00))
-        imgui.BeginChild("##searchBar", imgui.ImVec2(availWidth, 45), true)
-        imgui.SetCursorPos(imgui.ImVec2(8, 7))
+        imgui.BeginChild("##searchBar", imgui.ImVec2(availWidth, 40), true,
+            imgui.WindowFlags.NoScrollbar + imgui.WindowFlags.NoScrollWithMouse)
+        local controlHeight = imgui.GetTextLineHeight() + imgui.GetStyle().FramePadding.y * 2
+        imgui.SetCursorPos(imgui.ImVec2(8, (40 - controlHeight) / 2))
 
         -- Поиск
         imgui.PushItemWidth(250)
@@ -10668,7 +10912,7 @@ end, function(player)
         imgui.SameLine()
         imgui.SetCursorPosX(imgui.GetCursorPosX() + 5)
         local sortIcon = cfg.sortAscending and fa.ARROW_UP_SHORT_WIDE or fa.ARROW_DOWN_WIDE_SHORT
-        if imgui.Button(sortIcon .. "##sortDirection", imgui.ImVec2(35, 0)) then
+        if imgui.Button(sortIcon .. "##sortDirection", imgui.ImVec2(35, controlHeight)) then
             cfg.sortAscending = not cfg.sortAscending
             save()
         end
@@ -10676,13 +10920,12 @@ end, function(player)
                        "Сортировка: по возрастанию\nНажмите для сортировки по убыванию" or
                        "Сортировка: по убыванию\nНажмите для сортировки по возрастанию")
 
-        imgui.SameLine()
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 5)
+        imgui.SameLine(0, 15)
+        local toolbarToggleHeight = (imgui.GetTextLineHeight() + imgui.GetStyle().FramePadding.y * 2) * 0.80
+        imgui.SetCursorPosY((40 - toolbarToggleHeight) / 2)
 
-        imgui.SameLine()
-        imgui.SetCursorPosX(imgui.GetCursorPosX() + 10)
-
-        if imgui.Checkbox(u8 "Показывать пропускаемые", imcfg.showExcludedHouses) then
+        if imgui.ToggleButton(u8 "Показывать пропускаемые##imcfg_showExcludedHouses",
+            imcfg.showExcludedHouses) then
             cfg.showExcludedHouses = imcfg.showExcludedHouses[0]
             save()
         end
@@ -10691,13 +10934,16 @@ end, function(player)
 
         imgui.EndChild()
         imgui.PopStyleColor()
+        imgui.Dummy(imgui.ImVec2(0, 2))
 
-        imgui.Text(u8(string.format("Список домов (%d из %d)", #filteredHouses, totalHouses)))
-        imgui.Spacing()
         if data.working then
             __i__progressPanel()
         else
-            if imgui.BeginChild("##scrollArea", imgui.ImVec2(0, 0), false, imgui.WindowFlags.NoScrollWithMouse) then
+            imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0, 0, 0, 0))
+            local houseListOpen = imgui.BeginChild("##scrollArea", imgui.ImVec2(0, 0), false,
+                imgui.WindowFlags.NoScrollWithMouse)
+            imgui.PopStyleColor()
+            if houseListOpen then
                 local itemHeight = 130
                 imgui.Scroller("house_list", itemHeight, 400,
                     imgui.HoveredFlags.RectOnly + imgui.HoveredFlags.ChildWindows)
@@ -10868,7 +11114,7 @@ end, function(player)
                     if not isKnownNoBasement then
                         if status and status.lastCheck > 0 and status.earnings then
                             local earnings = formatEarnings(status.earnings.btc >= 1 and status.earnings.btc or 0,
-                                status.earnings.asc >= 1 and status.earnings.asc or 0, not data.isRodina)
+                                status.earnings.asc >= 1 and status.earnings.asc or 0, true)
                             if earnings == "{808080}0" then
                                 earnings = "{808080}Нет"
                             end
@@ -11113,7 +11359,7 @@ end, function(player)
                             end
                         end
                     else
-                        imgui.InvisibleButton("btn_placeholder_" .. i, imgui.ImVec2(cardW, cardH))
+                        imgui.InvisibleButton("btn_no_basement_" .. i, imgui.ImVec2(cardW, cardH))
                     end
 
                     if isSelected or isHovered then
@@ -11149,6 +11395,16 @@ end, function(player)
 
                         if not data.working then
                             imgui.Separator()
+                            if isKnownNoBasement and
+                                imgui.MenuItemBool(u8 "Проверить подвал повторно") then
+                                local task = buildTaskTable('scanBasements')
+                                cfg.housesWithoutBasement[houseStr] = nil
+                                cfg.basementScanned[houseStr] = nil
+                                save()
+                                runTaskAndReopenDialog(function()
+                                    task:run({house})
+                                end)
+                            end
                             if imgui.MenuItemBool(u8 "Обновить статус этого дома") then
                                 lua_thread.create(function()
                                     taskState.setWorking(true);
@@ -11158,13 +11414,11 @@ end, function(player)
                                     end
                                     data.dialogData.videocards = {}
                                     dialogActions.selectHouse(sr, house.index - 1)
-                                    wait(400)
                                     dialogActions.closeDialog(sr)
-                                    wait(200)
                                     taskState.setWorking(false);
                                     data.taskTypeNow = nil
                                     imgui.addNotification(u8(
-                                        string.format("Дом №%d обновлён", house.house_number)))
+                                        string.format("Дом №%d обновлё", house.house_number)))
                                 end)
                             end
                             if not houseFilter.isExcluded(house.house_number) and
@@ -11183,12 +11437,8 @@ end, function(player)
                 end
                 imgui.EndChild()
             end
-
-            imgui.End()
         end
-
-        imgui.End()
-    end
+    end)
 end)
 
 function __i__progressPanel()
@@ -11305,7 +11555,7 @@ function __i__progressPanel()
     imgui.EndChild()
 end
 
-function imgui.customTitleBar(param, resetFunc, windowWidth)
+function imgui.customTitleBar(param, resetFunc, windowWidth, onClose)
     local imStyle = imgui.GetStyle()
 
     imgui.SetCursorPosY(imStyle.ItemSpacing.y + 5)
@@ -11317,7 +11567,7 @@ function imgui.customTitleBar(param, resetFunc, windowWidth)
     end
 
     imgui.SameLine()
-    local titleX = (windowWidth - 170 - imStyle.ItemSpacing.x + imgui.CalcTextSize("t.me/justfedotScript").x) / 2 -
+    local titleX = (windowWidth - 110 - imStyle.ItemSpacing.x + imgui.CalcTextSize("t.me/justfedotScript").x) / 2 -
                        imgui.CalcTextSize(script.this.name).x / 2
     if data.isViceCity then
         titleX = titleX - 20
@@ -11336,18 +11586,10 @@ function imgui.customTitleBar(param, resetFunc, windowWidth)
 
     imgui.SameLine()
 
-    imgui.SetCursorPosX(windowWidth - 170 - imStyle.ItemSpacing.x)
+    imgui.SetCursorPosX(windowWidth - 110 - imStyle.ItemSpacing.x)
     imgui.SetCursorPosY(imStyle.ItemSpacing.y)
     if imgui.Button(fa('MONUMENT') .. "##popup_donation_button", imgui.ImVec2(50, 25)) then
         imgui.OpenPopup("donationPopupMenu")
-    end
-
-    imgui.SameLine()
-
-    imgui.SetCursorPosX(windowWidth - 110 - imStyle.ItemSpacing.x)
-    imgui.SetCursorPosY(imStyle.ItemSpacing.y)
-    if imgui.Button(fa("BARS") .. "##settings_button", imgui.ImVec2(50, 25)) then
-        data.showSettingsWindow[0] = not data.showSettingsWindow[0]
     end
 
     imgui.SameLine()
@@ -11356,8 +11598,14 @@ function imgui.customTitleBar(param, resetFunc, windowWidth)
     imgui.SetCursorPosY(imStyle.ItemSpacing.y)
     if imgui.ButtonClickable("Подождите...", not data.working, fa("XMARK") .. "##close_button",
         imgui.ImVec2(50, 25)) then
-        fixI()
-        param[0] = false
+        if onClose then
+            onClose()
+        else
+            fixI()
+            param[0] = false
+        end
+        data.mainMenuTab = "houses"
+        data.showLogsWindow[0] = false
         data.showSettingsWindow[0] = false
     end
 
@@ -11646,35 +11894,37 @@ function DrawDoubleProgressCircle(centerPos, outerRadius, innerRadius, thickness
     local drawList = imgui.GetWindowDrawList()
     local num_segments = 100
 
-    -- Цвета
     local colorBg = imgui.ImVec4(0.15, 0.16, 0.20, 1.0)
     local colorOuter = imgui.ImVec4(0.2, 0.6, 1.0, 1.0)
     local colorInner = imgui.ImVec4(0.3, 0.8, 0.3, 1.0)
 
-    -- Внешний круг
-    drawList:AddCircle(centerPos, outerRadius, imgui.ColorConvertFloat4ToU32(colorBg), num_segments, thickness)
+    local function drawProgressArc(radius, progress, color, thick)
+        progress = math.max(0, math.min(1, progress))
+        if progress <= 0.001 then
+            return
+        end
 
-    if outerProgress > 0.001 then
-        local start_angle = -math.pi / 2
-        local end_angle = start_angle + (2 * math.pi * outerProgress)
-
-        drawList:PathClear()
-        drawList:PathArcTo(centerPos, outerRadius, start_angle, end_angle, num_segments)
-        drawList:PathStroke(imgui.ColorConvertFloat4ToU32(colorOuter), false, thickness)
-    end
-
-    -- Внутренний круг
-    if innerRadius > 0 then
-        drawList:AddCircle(centerPos, innerRadius, imgui.ColorConvertFloat4ToU32(colorBg), num_segments, thickness - 2)
-
-        if innerProgress > 0.001 then
+        if progress >= 0.999 then
+            -- Полный круг
+            drawList:AddCircle(centerPos, radius, imgui.ColorConvertFloat4ToU32(color), num_segments, thick)
+        else
             local start_angle = -math.pi / 2
-            local end_angle = start_angle + (2 * math.pi * innerProgress)
+            local end_angle = start_angle + (2 * math.pi * progress)
 
             drawList:PathClear()
-            drawList:PathArcTo(centerPos, innerRadius, start_angle, end_angle, num_segments)
-            drawList:PathStroke(imgui.ColorConvertFloat4ToU32(colorInner), false, thickness - 2)
+            drawList:PathArcTo(centerPos, radius, start_angle, end_angle, num_segments)
+            drawList:PathStroke(imgui.ColorConvertFloat4ToU32(color), false, thick)
         end
+    end
+
+    -- Внешний круг (фон + прогресс)
+    drawList:AddCircle(centerPos, outerRadius, imgui.ColorConvertFloat4ToU32(colorBg), num_segments, thickness)
+    drawProgressArc(outerRadius, outerProgress, colorOuter, thickness)
+
+    -- Внутренний круг (фон + прогресс)
+    if innerRadius > 0 then
+        drawList:AddCircle(centerPos, innerRadius, imgui.ColorConvertFloat4ToU32(colorBg), num_segments, thickness - 2)
+        drawProgressArc(innerRadius, innerProgress, colorInner, thickness - 2)
     end
 end
 
